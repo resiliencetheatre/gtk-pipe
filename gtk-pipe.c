@@ -797,7 +797,9 @@ int main(int argc, char **argv)
 {
     App app = { .video_port = DEFAULT_VIDEO_PORT,
                 .audio_port = DEFAULT_AUDIO_PORT,
-                .text_port = DEFAULT_TEXT_PORT };
+                .text_port = DEFAULT_TEXT_PORT,
+                .enable_controls = TRUE,
+                .echo_cancellation = TRUE };
     const char *peer = "127.0.0.1";
 
     for (int i = 1; i < argc; i++) {
@@ -815,14 +817,15 @@ int main(int argc, char **argv)
             if (!parse_port(argv[++i], &app.text_port)) {
                 g_printerr("Invalid text port\n"); return EXIT_FAILURE;
             }
-        } else if (!g_strcmp0(argv[i], "--enable-controls")) {
-            app.enable_controls = TRUE;
-        } else if (!g_strcmp0(argv[i], "--echo-cancellation")) {
-            app.echo_cancellation = TRUE;
+        } else if (!g_strcmp0(argv[i], "--disable-controls")) {
+            app.enable_controls = FALSE;
+        } else if (!g_strcmp0(argv[i], "--disable-echo-cancellation")) {
+            app.echo_cancellation = FALSE;
         } else if (!g_strcmp0(argv[i], "--help")) {
             g_print("Usage: %s [--peer ADDRESS] [--video-port PORT] "
                     "[--audio-port PORT] [--text-port PORT] "
-                    "[--enable-controls] [--echo-cancellation]\n", argv[0]);
+                    "[--disable-controls] "
+                    "[--disable-echo-cancellation]\n", argv[0]);
             return EXIT_SUCCESS;
         } else {
             g_printerr("Unknown or incomplete option: %s\n", argv[i]);
@@ -840,8 +843,9 @@ int main(int argc, char **argv)
         GstElementFactory *dsp = gst_element_factory_find("webrtcdsp");
         GstElementFactory *probe = gst_element_factory_find("webrtcechoprobe");
         if (!dsp || !probe) {
-            g_printerr("--echo-cancellation requires the GStreamer "
-                       "webrtcdsp and webrtcechoprobe elements\n");
+            g_printerr("Echo cancellation requires the GStreamer webrtcdsp "
+                       "and webrtcechoprobe elements; use "
+                       "--disable-echo-cancellation to run without it\n");
             if (dsp)
                 gst_object_unref(dsp);
             if (probe)

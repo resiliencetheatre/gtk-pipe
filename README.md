@@ -60,8 +60,8 @@ local camera appears over the upper-right corner of the incoming video. It uses
 the same camera capture as transmission rather than opening the webcam a second
 time. Headphones avoid acoustic feedback.
 
-Pass `--enable-controls` to display a **Quality** slider to the right of the
-picture. At startup GTK Pipe reads the camera's native modes through its V4L2
+By default, a **quality** slider is displayed to the right of the picture. At
+startup GTK Pipe reads the camera's native modes through its V4L2
 or libcamera provider and offers at most four settings: two from the low end
 and two from the high end. Each slider
 stop is a resolution/frame-rate pair reported by the camera. Moving toward
@@ -69,24 +69,24 @@ higher video quality raises the VP8 target bitrate from 100 kbit/s to 2 Mbit/s
 and the Opus bitrate from 8 kbit/s to 64 kbit/s.
 The current resolution and frame rate are printed below the picture. The
 control may be changed before starting or while streaming; an active GStreamer
-pipeline renegotiates immediately. Without this option the control and values
-are hidden and the middle discovered quality setting is used.
+pipeline renegotiates immediately. Pass `--disable-controls` to hide the slider
+and values and use the middle discovered quality setting.
 
 ```sh
-./gtk-pipe --peer 192.168.1.20 --enable-controls
+./gtk-pipe --peer 192.168.1.20 --disable-controls
 ```
 
 ### Echo cancellation
 
-Pass `--echo-cancellation` when using speakers to remove the decoded remote
-audio from microphone capture. This enables GStreamer's WebRTC echo canceller,
-with moderate noise suppression and a high-pass filter; automatic gain control
-is left disabled. The unprocessed audio path remains the default and is useful
-with headphones or as a fallback. If the required `webrtcdsp` elements are not
-installed, requesting echo cancellation exits with a clear error.
+Echo cancellation is enabled by default to remove decoded remote audio from
+microphone capture when using speakers. It uses GStreamer's WebRTC echo
+canceller with moderate noise suppression and a high-pass filter; automatic
+gain control is left disabled. Pass `--disable-echo-cancellation` to use the
+unprocessed audio path with headphones, as a fallback, or when the required
+`webrtcdsp` elements are unavailable.
 
 ```sh
-./gtk-pipe --peer 192.168.1.20 --echo-cancellation
+./gtk-pipe --peer 192.168.1.20 --disable-echo-cancellation
 ```
 
 ## UFW firewall
