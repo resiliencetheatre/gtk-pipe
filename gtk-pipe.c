@@ -16,6 +16,16 @@
 #define REACHABLE_TIMEOUT_SECONDS 6
 
 typedef struct {
+    gint width;
+    gint height;
+} VideoSize;
+
+static const VideoSize video_sizes[] = {
+    { 160, 120 }, { 320, 240 }, { 640, 480 }, { 1280, 720 }
+};
+static const gint video_fps[] = { 5, 10, 15, 30 };
+
+typedef struct {
     GtkWidget *window;
     GtkWidget *peer_entry;
     GtkWidget *peer_indicator;
@@ -23,10 +33,14 @@ typedef struct {
     GtkWidget *status;
     GtkWidget *video_box;
     GtkWidget *video_widget;
+    GtkWidget *local_video_widget;
+    GtkWidget *local_preview_frame;
+    GtkWidget *video_settings_label;
     GtkWidget *text_view;
     GtkWidget *text_entry;
     GtkWidget *send_button;
     GstElement *pipeline;
+    GstElement *capture_caps;
     guint bus_watch;
     GSocket *text_socket;
     GSource *text_source;
@@ -36,6 +50,9 @@ typedef struct {
     guint video_port;
     guint audio_port;
     guint text_port;
+    guint size_index;
+    guint fps_index;
+    gboolean enable_controls;
 } App;
 
 static void close_text_channel(App *app);
@@ -221,12 +238,19 @@ static void stop_stream(App *app)
     }
     if (app->pipeline) {
         gst_element_set_state(app->pipeline, GST_STATE_NULL);
+        g_clear_pointer(&app->capture_caps, gst_object_unref);
         gst_object_unref(app->pipeline);
         app->pipeline = NULL;
     }
     if (app->video_widget) {
         gtk_container_remove(GTK_CONTAINER(app->video_box), app->video_widget);
         app->video_widget = NULL;
+    }
+    if (app->local_preview_frame) {
+        gtk_container_remove(GTK_CONTAINER(app->video_box),
+                             app->local_preview_frame);
+        app->local_preview_frame = NULL;
+        app->local_video_widget = NULL;
     }
     gtk_button_set_label(GTK_BUTTON(app->button), "Start stream");
     gtk_widget_set_sensitive(app->peer_entry, TRUE);
@@ -257,13 +281,19 @@ static gboolean bus_message(GstBus *bus, GstMessage *message, gpointer data)
     return G_SOURCE_CONTINUE;
 }
 
-static gchar *make_pipeline(const char *peer, guint video_port, guint audio_port)
+static gchar *make_pipeline(const App *app, const char *peer)
 {
+    const VideoSize *size = &video_sizes[app->size_index];
     return g_strdup_printf(
-        "autovideosrc ! videoconvert ! videoscale ! "
-        "video/x-raw,width=640,height=480,framerate=15/1 ! queue ! "
+        "autovideosrc ! videoconvert ! videoscale ! videorate ! "
+        "capsfilter name=capture_caps caps=\"video/x-raw,width=%d,height=%d,"
+        "framerate=%d/1\" ! tee name=camera_tee "
+        "camera_tee. ! queue ! "
         "vp8enc deadline=1 cpu-used=8 target-bitrate=600000 keyframe-max-dist=30 "
         "! rtpvp8pay pt=96 ! udpsink host=\"%s\" port=%u sync=false async=false "
+        "camera_tee. ! queue leaky=downstream max-size-buffers=1 ! videoscale ! "
+        "video/x-raw,width=160,height=120 ! videoconvert ! "
+        "gtksink name=local_preview sync=false qos=false "
         "autoaudiosrc ! audioconvert ! audioresample ! "
         "audio/x-raw,rate=48000,channels=1 ! queue ! "
         "opusenc bitrate=32000 inband-fec=true ! rtpopuspay pt=97 ! "
@@ -276,7 +306,65 @@ static gchar *make_pipeline(const char *peer, guint video_port, guint audio_port
         "encoding-name=OPUS,payload=97\" ! rtpjitterbuffer latency=120 "
         "drop-on-latency=true ! rtpopusdepay ! opusdec plc=true ! "
         "audioconvert ! audioresample ! autoaudiosink sync=false",
-        peer, video_port, peer, audio_port, video_port, audio_port);
+        size->width, size->height, video_fps[app->fps_index],
+        peer, app->video_port, peer, app->audio_port,
+        app->video_port, app->audio_port);
+}
+
+static void update_video_settings(App *app)
+{
+    const VideoSize *size = &video_sizes[app->size_index];
+    gchar *label = g_strdup_printf(
+        "Resolution: %d×%d (min %d×%d)    FPS: %d (min %d)",
+        size->width, size->height, video_sizes[0].width, video_sizes[0].height,
+        video_fps[app->fps_index], video_fps[0]);
+    if (app->video_settings_label)
+        gtk_label_set_text(GTK_LABEL(app->video_settings_label), label);
+    g_free(label);
+
+    if (app->capture_caps) {
+        GstCaps *caps = gst_caps_new_simple("video/x-raw",
+            "width", G_TYPE_INT, size->width,
+            "height", G_TYPE_INT, size->height,
+            "framerate", GST_TYPE_FRACTION, video_fps[app->fps_index], 1,
+            NULL);
+        g_object_set(app->capture_caps, "caps", caps, NULL);
+        gst_caps_unref(caps);
+    }
+}
+
+static void resolution_changed(GtkRange *range, gpointer data)
+{
+    App *app = data;
+    app->size_index = (guint)gtk_range_get_value(range);
+    update_video_settings(app);
+}
+
+static void fps_changed(GtkRange *range, gpointer data)
+{
+    App *app = data;
+    app->fps_index = (guint)gtk_range_get_value(range);
+    update_video_settings(app);
+}
+
+static GtkWidget *make_vertical_control(const char *title, guint maximum,
+                                        guint selected, GCallback callback,
+                                        App *app)
+{
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 3);
+    GtkWidget *label = gtk_label_new(title);
+    GtkWidget *scale = gtk_scale_new_with_range(GTK_ORIENTATION_VERTICAL,
+                                                0, maximum, 1);
+    gtk_range_set_inverted(GTK_RANGE(scale), TRUE);
+    gtk_range_set_value(GTK_RANGE(scale), selected);
+    gtk_scale_set_draw_value(GTK_SCALE(scale), FALSE);
+    gtk_range_set_round_digits(GTK_RANGE(scale), 0);
+    gtk_widget_set_vexpand(scale, TRUE);
+    gtk_widget_set_tooltip_text(scale, title);
+    g_signal_connect(scale, "value-changed", callback, app);
+    gtk_box_pack_start(GTK_BOX(box), label, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box), scale, TRUE, TRUE, 0);
+    return box;
 }
 
 static gboolean start_stream(App *app)
@@ -286,6 +374,7 @@ static gboolean start_stream(App *app)
     GError *error = NULL;
     gchar *description;
     GstElement *sink;
+    GstElement *local_sink;
     GstBus *bus;
 
     if (!address) {
@@ -294,7 +383,7 @@ static gboolean start_stream(App *app)
     }
     g_object_unref(address);
 
-    description = make_pipeline(peer, app->video_port, app->audio_port);
+    description = make_pipeline(app, peer);
     app->pipeline = gst_parse_launch(description, &error);
     g_free(description);
     if (!app->pipeline) {
@@ -311,6 +400,9 @@ static gboolean start_stream(App *app)
         return FALSE;
     }
 
+    app->capture_caps = gst_bin_get_by_name(GST_BIN(app->pipeline),
+                                             "capture_caps");
+
     sink = gst_bin_get_by_name(GST_BIN(app->pipeline), "remote_video");
     if (!sink) {
         set_status(app, "GStreamer gtksink is unavailable");
@@ -319,9 +411,30 @@ static gboolean start_stream(App *app)
     }
     g_object_get(sink, "widget", &app->video_widget, NULL);
     gst_object_unref(sink);
-    gtk_box_pack_start(GTK_BOX(app->video_box), app->video_widget, TRUE, TRUE, 0);
+    gtk_container_add(GTK_CONTAINER(app->video_box), app->video_widget);
     gtk_widget_show(app->video_widget);
     g_object_unref(app->video_widget); /* The container now owns the widget. */
+
+    local_sink = gst_bin_get_by_name(GST_BIN(app->pipeline), "local_preview");
+    if (!local_sink) {
+        stop_stream(app);
+        set_status(app, "GStreamer local preview sink is unavailable");
+        return FALSE;
+    }
+    g_object_get(local_sink, "widget", &app->local_video_widget, NULL);
+    gst_object_unref(local_sink);
+    app->local_preview_frame = gtk_frame_new(NULL);
+    gtk_frame_set_shadow_type(GTK_FRAME(app->local_preview_frame), GTK_SHADOW_IN);
+    gtk_widget_set_halign(app->local_preview_frame, GTK_ALIGN_END);
+    gtk_widget_set_valign(app->local_preview_frame, GTK_ALIGN_START);
+    gtk_widget_set_margin_top(app->local_preview_frame, 8);
+    gtk_widget_set_margin_end(app->local_preview_frame, 8);
+    gtk_container_add(GTK_CONTAINER(app->local_preview_frame),
+                      app->local_video_widget);
+    gtk_overlay_add_overlay(GTK_OVERLAY(app->video_box),
+                            app->local_preview_frame);
+    gtk_widget_show_all(app->local_preview_frame);
+    g_object_unref(app->local_video_widget);
 
     bus = gst_element_get_bus(app->pipeline);
     app->bus_watch = gst_bus_add_watch(bus, bus_message, app);
@@ -418,6 +531,10 @@ static void build_ui(App *app, const char *peer)
     GtkWidget *label = gtk_label_new("Peer address:");
     GtkWidget *text_scroll;
     GtkWidget *message_controls = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget *video_area = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget *video_column = gtk_box_new(GTK_ORIENTATION_VERTICAL, 3);
+    GtkWidget *resolution_control;
+    GtkWidget *fps_control;
 
     app->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(app->window), "GTK Pipe");
@@ -437,9 +554,32 @@ static void build_ui(App *app, const char *peer)
     gtk_box_pack_start(GTK_BOX(controls), app->peer_indicator, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(controls), app->button, FALSE, FALSE, 0);
 
-    app->video_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    app->video_box = gtk_overlay_new();
     gtk_widget_set_hexpand(app->video_box, TRUE);
     gtk_widget_set_vexpand(app->video_box, TRUE);
+    gtk_box_pack_start(GTK_BOX(video_column), app->video_box, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(video_area), video_column, TRUE, TRUE, 0);
+    if (app->enable_controls) {
+        PangoAttrList *small_attrs = pango_attr_list_new();
+        app->video_settings_label = gtk_label_new(NULL);
+        pango_attr_list_insert(small_attrs,
+                               pango_attr_scale_new(PANGO_SCALE_SMALL));
+        gtk_label_set_attributes(GTK_LABEL(app->video_settings_label), small_attrs);
+        pango_attr_list_unref(small_attrs);
+        gtk_label_set_xalign(GTK_LABEL(app->video_settings_label), 0.5);
+        resolution_control = make_vertical_control(
+            "Size", G_N_ELEMENTS(video_sizes) - 1, app->size_index,
+            G_CALLBACK(resolution_changed), app);
+        fps_control = make_vertical_control(
+            "FPS", G_N_ELEMENTS(video_fps) - 1, app->fps_index,
+            G_CALLBACK(fps_changed), app);
+        gtk_box_pack_start(GTK_BOX(video_column), app->video_settings_label,
+                           FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(video_area), resolution_control,
+                           FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(video_area), fps_control, FALSE, FALSE, 0);
+        update_video_settings(app);
+    }
     app->text_view = gtk_text_view_new();
     gtk_text_view_set_editable(GTK_TEXT_VIEW(app->text_view), FALSE);
     gtk_text_view_set_cursor_visible(GTK_TEXT_VIEW(app->text_view), FALSE);
@@ -465,7 +605,7 @@ static void build_ui(App *app, const char *peer)
     gtk_label_set_ellipsize(GTK_LABEL(app->status), PANGO_ELLIPSIZE_END);
 
     gtk_box_pack_start(GTK_BOX(root), controls, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(root), app->video_box, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(root), video_area, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(root), text_scroll, FALSE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(root), message_controls, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(root), app->status, FALSE, FALSE, 0);
@@ -480,7 +620,9 @@ int main(int argc, char **argv)
 {
     App app = { .video_port = DEFAULT_VIDEO_PORT,
                 .audio_port = DEFAULT_AUDIO_PORT,
-                .text_port = DEFAULT_TEXT_PORT };
+                .text_port = DEFAULT_TEXT_PORT,
+                .size_index = 2,
+                .fps_index = 2 };
     const char *peer = "127.0.0.1";
 
     for (int i = 1; i < argc; i++) {
@@ -498,9 +640,12 @@ int main(int argc, char **argv)
             if (!parse_port(argv[++i], &app.text_port)) {
                 g_printerr("Invalid text port\n"); return EXIT_FAILURE;
             }
+        } else if (!g_strcmp0(argv[i], "--enable-controls")) {
+            app.enable_controls = TRUE;
         } else if (!g_strcmp0(argv[i], "--help")) {
             g_print("Usage: %s [--peer ADDRESS] [--video-port PORT] "
-                    "[--audio-port PORT] [--text-port PORT]\n", argv[0]);
+                    "[--audio-port PORT] [--text-port PORT] "
+                    "[--enable-controls]\n", argv[0]);
             return EXIT_SUCCESS;
         } else {
             g_printerr("Unknown or incomplete option: %s\n", argv[i]);

@@ -55,8 +55,23 @@ media stream starts.
 Click **Start stream** on both to exchange webcam video and microphone audio.
 The remote picture appears in the window and remote audio plays through the
 default output. The window starts 640 pixels wide but can be narrowed; received
-video scales down while retaining its aspect ratio. Headphones avoid acoustic
-feedback.
+video scales down while retaining its aspect ratio. A 160×120 preview of the
+local camera appears over the upper-right corner of the incoming video. It uses
+the same camera capture as transmission rather than opening the webcam a second
+time. Headphones avoid acoustic feedback.
+
+Pass `--enable-controls` to display vertical controls to the right of the
+picture. They select capture resolution
+(`160×120`, `320×240`, `640×480`, or `1280×720`) and frame rate (`5`, `10`,
+`15`, or `30` FPS). The current values and minimums are printed below the
+picture. Controls may be changed before starting or while streaming; an active
+GStreamer pipeline renegotiates the new settings immediately. Without this
+option the controls and values are hidden, and video uses the default `640×480`
+at `15` FPS.
+
+```sh
+./gtk-pipe --peer 192.168.1.20 --enable-controls
+```
 
 ## UFW firewall
 
