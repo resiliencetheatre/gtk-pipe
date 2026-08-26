@@ -60,14 +60,15 @@ local camera appears over the upper-right corner of the incoming video. It uses
 the same camera capture as transmission rather than opening the webcam a second
 time. Headphones avoid acoustic feedback.
 
-Pass `--enable-controls` to display vertical controls to the right of the
-picture. They select capture resolution
-(`160×120`, `320×240`, `640×480`, or `1280×720`) and frame rate (`5`, `10`,
-`15`, or `30` FPS). The current values and minimums are printed below the
-picture. Controls may be changed before starting or while streaming; an active
-GStreamer pipeline renegotiates the new settings immediately. Without this
-option the controls and values are hidden, and video uses the default `640×480`
-at `15` FPS.
+Pass `--enable-controls` to display a **Quality** slider to the right of the
+picture. At startup GTK Pipe reads the V4L2 camera's native modes and offers at
+most four settings: two from the low end and two from the high end. Each slider
+stop is a resolution/frame-rate pair reported by the camera. Moving toward
+higher video quality also raises the Opus bitrate from 8 kbit/s to 64 kbit/s.
+The current resolution and frame rate are printed below the picture. The
+control may be changed before starting or while streaming; an active GStreamer
+pipeline renegotiates immediately. Without this option the control and values
+are hidden and the middle discovered quality setting is used.
 
 ```sh
 ./gtk-pipe --peer 192.168.1.20 --enable-controls

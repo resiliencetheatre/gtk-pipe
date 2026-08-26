@@ -18,12 +18,9 @@
 typedef struct {
     gint width;
     gint height;
-} VideoSize;
-
-static const VideoSize video_sizes[] = {
-    { 160, 120 }, { 320, 240 }, { 640, 480 }, { 1280, 720 }
-};
-static const gint video_fps[] = { 5, 10, 15, 30 };
+    gint fps_n;
+    gint fps_d;
+} VideoMode;
 
 typedef struct {
     GtkWidget *window;
@@ -41,6 +38,7 @@ typedef struct {
     GtkWidget *send_button;
     GstElement *pipeline;
     GstElement *capture_caps;
+    GstElement *opus_encoder;
     guint bus_watch;
     GSocket *text_socket;
     GSource *text_source;
@@ -50,10 +48,15 @@ typedef struct {
     guint video_port;
     guint audio_port;
     guint text_port;
-    guint size_index;
-    guint fps_index;
+    GArray *video_modes;
+    gchar *video_device;
+    guint quality_index;
     gboolean enable_controls;
 } App;
+
+#define MAX_QUALITY_OPTIONS 4
+#define MIN_OPUS_BITRATE 8000
+#define MAX_OPUS_BITRATE 64000
 
 static void close_text_channel(App *app);
 
@@ -239,6 +242,7 @@ static void stop_stream(App *app)
     if (app->pipeline) {
         gst_element_set_state(app->pipeline, GST_STATE_NULL);
         g_clear_pointer(&app->capture_caps, gst_object_unref);
+        g_clear_pointer(&app->opus_encoder, gst_object_unref);
         gst_object_unref(app->pipeline);
         app->pipeline = NULL;
     }
@@ -281,13 +285,147 @@ static gboolean bus_message(GstBus *bus, GstMessage *message, gpointer data)
     return G_SOURCE_CONTINUE;
 }
 
+static gint compare_video_modes(gconstpointer a, gconstpointer b)
+{
+    const VideoMode *ma = a;
+    const VideoMode *mb = b;
+    gint64 area_a = (gint64)ma->width * ma->height;
+    gint64 area_b = (gint64)mb->width * mb->height;
+    gint64 rate_a = (gint64)ma->fps_n * mb->fps_d;
+    gint64 rate_b = (gint64)mb->fps_n * ma->fps_d;
+
+    if (area_a != area_b)
+        return area_a < area_b ? -1 : 1;
+    if (rate_a != rate_b)
+        return rate_a < rate_b ? -1 : 1;
+    return 0;
+}
+
+static void add_video_mode(GArray *modes, gint width, gint height,
+                           gint fps_n, gint fps_d)
+{
+    VideoMode mode = { width, height, fps_n, fps_d };
+
+    if (width <= 0 || height <= 0 || fps_n <= 0 || fps_d <= 0)
+        return;
+    for (guint i = 0; i < modes->len; i++) {
+        VideoMode *old = &g_array_index(modes, VideoMode, i);
+        if (old->width == width && old->height == height &&
+            (gint64)old->fps_n * fps_d == (gint64)fps_n * old->fps_d)
+            return;
+    }
+    g_array_append_val(modes, mode);
+}
+
+static void add_framerates(GArray *modes, gint width, gint height,
+                           const GValue *value)
+{
+    if (GST_VALUE_HOLDS_FRACTION(value)) {
+        add_video_mode(modes, width, height,
+                       gst_value_get_fraction_numerator(value),
+                       gst_value_get_fraction_denominator(value));
+    } else if (GST_VALUE_HOLDS_LIST(value)) {
+        for (guint i = 0; i < gst_value_list_get_size(value); i++)
+            add_framerates(modes, width, height,
+                           gst_value_list_get_value(value, i));
+    } else if (GST_VALUE_HOLDS_FRACTION_RANGE(value)) {
+        add_framerates(modes, width, height,
+                       gst_value_get_fraction_range_min(value));
+        add_framerates(modes, width, height,
+                       gst_value_get_fraction_range_max(value));
+    }
+}
+
+static gboolean discover_video_modes(App *app)
+{
+    GstDeviceMonitor *monitor = gst_device_monitor_new();
+    GstCaps *filter = gst_caps_from_string("video/x-raw");
+    GList *devices;
+    GArray *all = g_array_new(FALSE, FALSE, sizeof(VideoMode));
+
+    gst_device_monitor_add_filter(monitor, "Video/Source", filter);
+    gst_caps_unref(filter);
+    if (!gst_device_monitor_start(monitor)) {
+        gst_object_unref(monitor);
+        g_array_unref(all);
+        return FALSE;
+    }
+    devices = gst_device_monitor_get_devices(monitor);
+    for (GList *item = devices; item && !app->video_device; item = item->next) {
+        GstDevice *device = item->data;
+        GstStructure *properties = gst_device_get_properties(device);
+        GstCaps *caps = gst_device_get_caps(device);
+        const gchar *path = properties
+                          ? gst_structure_get_string(properties, "device.path")
+                          : NULL;
+
+        if (!path || !g_str_has_prefix(path, "/dev/video")) {
+            if (properties)
+                gst_structure_free(properties);
+            gst_caps_unref(caps);
+            continue;
+        }
+        for (guint i = 0; i < gst_caps_get_size(caps); i++) {
+            const GstStructure *s = gst_caps_get_structure(caps, i);
+            gint width, height;
+            const GValue *framerate;
+
+            if (g_strcmp0(gst_structure_get_name(s), "video/x-raw") ||
+                !gst_structure_get_int(s, "width", &width) ||
+                !gst_structure_get_int(s, "height", &height))
+                continue;
+            framerate = gst_structure_get_value(s, "framerate");
+            if (framerate)
+                add_framerates(all, width, height, framerate);
+        }
+        if (all->len)
+            app->video_device = g_strdup(path);
+        if (properties)
+            gst_structure_free(properties);
+        gst_caps_unref(caps);
+    }
+    g_list_free_full(devices, gst_object_unref);
+    gst_device_monitor_stop(monitor);
+    gst_object_unref(monitor);
+
+    if (!all->len) {
+        g_array_unref(all);
+        return FALSE;
+    }
+    g_array_sort(all, compare_video_modes);
+    app->video_modes = g_array_new(FALSE, FALSE, sizeof(VideoMode));
+    if (all->len <= MAX_QUALITY_OPTIONS) {
+        g_array_append_vals(app->video_modes, all->data, all->len);
+    } else {
+        guint picks[] = { 0, 1, all->len - 2, all->len - 1 };
+        for (guint i = 0; i < G_N_ELEMENTS(picks); i++) {
+            VideoMode mode = g_array_index(all, VideoMode, picks[i]);
+            g_array_append_val(app->video_modes, mode);
+        }
+    }
+    g_array_unref(all);
+    app->quality_index = (app->video_modes->len - 1) / 2;
+    return TRUE;
+}
+
+static guint opus_bitrate(const App *app)
+{
+    if (app->video_modes->len < 2)
+        return MIN_OPUS_BITRATE;
+    return MIN_OPUS_BITRATE +
+        (MAX_OPUS_BITRATE - MIN_OPUS_BITRATE) * app->quality_index /
+        (app->video_modes->len - 1);
+}
+
 static gchar *make_pipeline(const App *app, const char *peer)
 {
-    const VideoSize *size = &video_sizes[app->size_index];
-    return g_strdup_printf(
-        "autovideosrc ! videoconvert ! videoscale ! videorate ! "
-        "capsfilter name=capture_caps caps=\"video/x-raw,width=%d,height=%d,"
-        "framerate=%d/1\" ! tee name=camera_tee "
+    const VideoMode *mode = &g_array_index(app->video_modes, VideoMode,
+                                           app->quality_index);
+    gchar *escaped_device = g_strescape(app->video_device, NULL);
+    gchar *pipeline = g_strdup_printf(
+        "v4l2src device=\"%s\" ! capsfilter name=capture_caps "
+        "caps=\"video/x-raw,width=%d,height=%d,framerate=%d/%d\" ! "
+        "videoconvert ! tee name=camera_tee "
         "camera_tee. ! queue ! "
         "vp8enc deadline=1 cpu-used=8 target-bitrate=600000 keyframe-max-dist=30 "
         "! rtpvp8pay pt=96 ! udpsink host=\"%s\" port=%u sync=false async=false "
@@ -296,7 +434,7 @@ static gchar *make_pipeline(const App *app, const char *peer)
         "gtksink name=local_preview sync=false qos=false "
         "autoaudiosrc ! audioconvert ! audioresample ! "
         "audio/x-raw,rate=48000,channels=1 ! queue ! "
-        "opusenc bitrate=32000 inband-fec=true ! rtpopuspay pt=97 ! "
+        "opusenc name=opus_encoder bitrate=%u inband-fec=true ! rtpopuspay pt=97 ! "
         "udpsink host=\"%s\" port=%u sync=false async=false "
         "udpsrc port=%u caps=\"application/x-rtp,media=video,clock-rate=90000,"
         "encoding-name=VP8,payload=96\" ! rtpjitterbuffer latency=120 "
@@ -306,44 +444,41 @@ static gchar *make_pipeline(const App *app, const char *peer)
         "encoding-name=OPUS,payload=97\" ! rtpjitterbuffer latency=120 "
         "drop-on-latency=true ! rtpopusdepay ! opusdec plc=true ! "
         "audioconvert ! audioresample ! autoaudiosink sync=false",
-        size->width, size->height, video_fps[app->fps_index],
-        peer, app->video_port, peer, app->audio_port,
+        escaped_device, mode->width, mode->height, mode->fps_n, mode->fps_d,
+        peer, app->video_port, opus_bitrate(app), peer, app->audio_port,
         app->video_port, app->audio_port);
+    g_free(escaped_device);
+    return pipeline;
 }
 
 static void update_video_settings(App *app)
 {
-    const VideoSize *size = &video_sizes[app->size_index];
+    const VideoMode *mode = &g_array_index(app->video_modes, VideoMode,
+                                           app->quality_index);
     gchar *label = g_strdup_printf(
-        "Resolution: %d×%d (min %d×%d)    FPS: %d (min %d)",
-        size->width, size->height, video_sizes[0].width, video_sizes[0].height,
-        video_fps[app->fps_index], video_fps[0]);
+        "Resolution: %d×%d    FPS: %.2f",
+        mode->width, mode->height, (gdouble)mode->fps_n / mode->fps_d);
     if (app->video_settings_label)
         gtk_label_set_text(GTK_LABEL(app->video_settings_label), label);
     g_free(label);
 
     if (app->capture_caps) {
         GstCaps *caps = gst_caps_new_simple("video/x-raw",
-            "width", G_TYPE_INT, size->width,
-            "height", G_TYPE_INT, size->height,
-            "framerate", GST_TYPE_FRACTION, video_fps[app->fps_index], 1,
+            "width", G_TYPE_INT, mode->width,
+            "height", G_TYPE_INT, mode->height,
+            "framerate", GST_TYPE_FRACTION, mode->fps_n, mode->fps_d,
             NULL);
         g_object_set(app->capture_caps, "caps", caps, NULL);
         gst_caps_unref(caps);
     }
+    if (app->opus_encoder)
+        g_object_set(app->opus_encoder, "bitrate", opus_bitrate(app), NULL);
 }
 
-static void resolution_changed(GtkRange *range, gpointer data)
+static void quality_changed(GtkRange *range, gpointer data)
 {
     App *app = data;
-    app->size_index = (guint)gtk_range_get_value(range);
-    update_video_settings(app);
-}
-
-static void fps_changed(GtkRange *range, gpointer data)
-{
-    App *app = data;
-    app->fps_index = (guint)gtk_range_get_value(range);
+    app->quality_index = (guint)gtk_range_get_value(range);
     update_video_settings(app);
 }
 
@@ -402,6 +537,8 @@ static gboolean start_stream(App *app)
 
     app->capture_caps = gst_bin_get_by_name(GST_BIN(app->pipeline),
                                              "capture_caps");
+    app->opus_encoder = gst_bin_get_by_name(GST_BIN(app->pipeline),
+                                             "opus_encoder");
 
     sink = gst_bin_get_by_name(GST_BIN(app->pipeline), "remote_video");
     if (!sink) {
@@ -533,8 +670,7 @@ static void build_ui(App *app, const char *peer)
     GtkWidget *message_controls = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     GtkWidget *video_area = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     GtkWidget *video_column = gtk_box_new(GTK_ORIENTATION_VERTICAL, 3);
-    GtkWidget *resolution_control;
-    GtkWidget *fps_control;
+    GtkWidget *quality_control;
 
     app->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(app->window), "GTK Pipe");
@@ -567,17 +703,13 @@ static void build_ui(App *app, const char *peer)
         gtk_label_set_attributes(GTK_LABEL(app->video_settings_label), small_attrs);
         pango_attr_list_unref(small_attrs);
         gtk_label_set_xalign(GTK_LABEL(app->video_settings_label), 0.5);
-        resolution_control = make_vertical_control(
-            "Size", G_N_ELEMENTS(video_sizes) - 1, app->size_index,
-            G_CALLBACK(resolution_changed), app);
-        fps_control = make_vertical_control(
-            "FPS", G_N_ELEMENTS(video_fps) - 1, app->fps_index,
-            G_CALLBACK(fps_changed), app);
+        quality_control = make_vertical_control(
+            "quality", app->video_modes->len - 1, app->quality_index,
+            G_CALLBACK(quality_changed), app);
         gtk_box_pack_start(GTK_BOX(video_column), app->video_settings_label,
                            FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(video_area), resolution_control,
+        gtk_box_pack_start(GTK_BOX(video_area), quality_control,
                            FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(video_area), fps_control, FALSE, FALSE, 0);
         update_video_settings(app);
     }
     app->text_view = gtk_text_view_new();
@@ -620,9 +752,7 @@ int main(int argc, char **argv)
 {
     App app = { .video_port = DEFAULT_VIDEO_PORT,
                 .audio_port = DEFAULT_AUDIO_PORT,
-                .text_port = DEFAULT_TEXT_PORT,
-                .size_index = 2,
-                .fps_index = 2 };
+                .text_port = DEFAULT_TEXT_PORT };
     const char *peer = "127.0.0.1";
 
     for (int i = 1; i < argc; i++) {
@@ -659,8 +789,14 @@ int main(int argc, char **argv)
     }
 
     gst_init(&argc, &argv);
+    if (!discover_video_modes(&app)) {
+        g_printerr("No V4L2 camera with supported raw-video modes was found\n");
+        return EXIT_FAILURE;
+    }
     gtk_init(&argc, &argv);
     build_ui(&app, peer);
     gtk_main();
+    g_array_unref(app.video_modes);
+    g_free(app.video_device);
     return EXIT_SUCCESS;
 }
