@@ -1,7 +1,8 @@
 # GTK Pipe
 
 GTK Pipe is a small, live, two-way webcam and microphone link for Linux. It
-uses GTK 3 for one start/stop window and GStreamer RTP streams over UDP. Run the
+uses GTK 3 for one start/stop window and GStreamer RTP streams over UDP. Short
+UTF-8 text messages use a third UDP channel. Run the
 same program on both computers; each peer sends to and listens on the same two
 ports.
 
@@ -42,11 +43,13 @@ On B:
 ./gtk-pipe --peer 192.168.1.10
 ```
 
-Click **Start stream** on both. Allow inbound UDP ports 5000 and 5002 in each
+Click **Start stream** on both. Allow inbound UDP ports 5000, 5002, and 5004 in each
 host firewall. The remote picture appears in the window and remote audio plays
-through the default output. Headphones avoid acoustic feedback.
+through the default output. Enter sends a message, as does the **Send** button.
+Headphones avoid acoustic feedback.
 
-Use `--video-port PORT` and `--audio-port PORT` on both peers to change ports.
+Use `--video-port PORT`, `--audio-port PORT`, and `--text-port PORT` on both
+peers to change ports.
 Only numeric IPv4 and IPv6 addresses are accepted. At roughly 600 kbit/s video
 plus 32 kbit/s audio, actual network use is normally under 1 Mbit/s per peer,
 but scenes with motion and protocol overhead vary.
@@ -54,12 +57,15 @@ but scenes with motion and protocol overhead vary.
 ## Design
 
 - VP8 video is RTP payload type 96; Opus audio is RTP payload type 97.
+- UTF-8 text is sent as one datagram per message on UDP port 5004, with a
+  maximum encoded size of 1024 bytes.
 - Separate UDP ports make firewall rules and troubleshooting straightforward.
 - A 120 ms RTP jitter buffer trades a little delay for smoother playback.
 - Start creates capture, transmit, receive, and playback together. Stop releases
   the camera, microphone, sockets, and audio output.
 - UDP/RTP provides no delivery guarantee. Packet loss may cause temporary
-  glitches, which is expected for this minimal real-time design.
+  glitches or a missing text message, which is expected for this minimal
+  real-time design. Text messages are neither acknowledged nor retransmitted.
 
 The UI and build style follow the native C/GTK3/GStreamer approach used by the
 [VisualPTT project](https://github.com/resiliencetheatre/visualptt), while the
