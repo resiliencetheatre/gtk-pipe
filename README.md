@@ -12,6 +12,11 @@ all three UDP ports through an encrypted UDP-capable tunnel or proxy, such as
 WireGuard, and give GTK Pipe the peer's tunnel address. Do not expose the ports
 directly to the public Internet. The program does not perform NAT traversal.
 
+This tool was AI generated between Aug 26 04:44:37 2026 and Aug 26 11:29:29 2026.
+
+Humans were used only in specification and testing.
+
+
 ## Debian 13 dependencies and build
 
 On each Debian 13 (Trixie) host:
