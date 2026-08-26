@@ -43,6 +43,7 @@ typedef struct {
     GstElement *capture_caps;
     GstElement *vp8_encoder;
     GstElement *opus_encoder;
+    GstElement *notification_player;
     guint bus_watch;
     GSocket *text_socket;
     GSource *text_source;
@@ -54,6 +55,8 @@ typedef struct {
     guint text_port;
     GArray *video_modes;
     gchar *video_source;
+    gchar *site_name;
+    gchar *notification_sound;
     guint quality_index;
     gboolean enable_controls;
     gboolean echo_cancellation;
@@ -102,12 +105,39 @@ static void append_message(App *app, const char *who, const char *message)
     g_date_time_unref(now);
 }
 
+static void play_notification_sound(App *app)
+{
+    gchar *absolute_path;
+    gchar *uri;
+
+    if (!app->notification_sound)
+        return;
+    absolute_path = g_canonicalize_filename(app->notification_sound, NULL);
+    uri = gst_filename_to_uri(absolute_path, NULL);
+    g_free(absolute_path);
+    if (!uri)
+        return;
+    if (!app->notification_player)
+        app->notification_player = gst_element_factory_make("playbin", NULL);
+    if (app->notification_player) {
+        gst_element_set_state(app->notification_player, GST_STATE_NULL);
+        g_object_set(app->notification_player, "uri", uri, NULL);
+        gst_element_set_state(app->notification_player, GST_STATE_PLAYING);
+    }
+    g_free(uri);
+}
+
 static void set_incoming_stream_notice(App *app, gboolean visible)
 {
-    if (visible)
+    gboolean was_visible = gtk_widget_get_visible(app->incoming_stream_label);
+
+    if (visible) {
         gtk_widget_show(app->incoming_stream_label);
-    else
+        if (!was_visible)
+            play_notification_sound(app);
+    } else {
         gtk_widget_hide(app->incoming_stream_label);
+    }
 }
 
 static gboolean receive_text(GSocket *socket, GIOCondition condition,
@@ -477,11 +507,14 @@ static gchar *make_pipeline(const App *app, const char *peer)
     const gchar *playback_probe = app->echo_cancellation
         ? "webrtcechoprobe name=echo_probe ! "
         : "";
+    gchar *escaped_site_name = g_strescape(app->site_name, NULL);
     gchar *pipeline = g_strdup_printf(
         "%s ! capsfilter name=capture_caps "
         "caps=\"video/x-raw,width=%d,height=%d,framerate=%d/%d\" ! "
         "videoconvert ! tee name=camera_tee "
         "camera_tee. ! queue ! "
+        "clockoverlay time-format=\"%%H:%%M:%%S %%d.%%m.%%Y %s\" "
+        "halignment=left valignment=bottom shaded-background=true ! "
         "vp8enc name=vp8_encoder deadline=1 cpu-used=8 target-bitrate=%u "
         "keyframe-max-dist=30 "
         "! rtpvp8pay pt=96 ! udpsink host=\"%s\" port=%u sync=false async=false "
@@ -502,10 +535,11 @@ static gchar *make_pipeline(const App *app, const char *peer)
         "audioconvert ! audioresample ! "
         "audio/x-raw,format=S16LE,rate=48000 ! %sautoaudiosink sync=false",
         app->video_source, mode->width, mode->height, mode->fps_n, mode->fps_d,
-        vp8_bitrate(app), peer, app->video_port, capture_dsp,
+        escaped_site_name, vp8_bitrate(app), peer, app->video_port, capture_dsp,
         opus_bitrate(app),
         peer, app->audio_port,
         app->video_port, app->audio_port, playback_probe);
+    g_free(escaped_site_name);
     return pipeline;
 }
 
@@ -715,6 +749,11 @@ static void window_destroy(GtkWidget *widget, gpointer data)
         app->heartbeat_timer = 0;
     }
     close_text_channel(app);
+    if (app->notification_player) {
+        gst_element_set_state(app->notification_player, GST_STATE_NULL);
+        gst_object_unref(app->notification_player);
+        app->notification_player = NULL;
+    }
     gtk_main_quit();
 }
 
@@ -834,6 +873,8 @@ int main(int argc, char **argv)
                 .echo_cancellation = TRUE };
     const char *peer = "127.0.0.1";
 
+    app.site_name = g_strdup(g_get_host_name());
+
     for (int i = 1; i < argc; i++) {
         if (!g_strcmp0(argv[i], "--peer") && i + 1 < argc)
             peer = argv[++i];
@@ -853,9 +894,17 @@ int main(int argc, char **argv)
             app.enable_controls = FALSE;
         } else if (!g_strcmp0(argv[i], "--disable-echo-cancellation")) {
             app.echo_cancellation = FALSE;
+        } else if (!g_strcmp0(argv[i], "--site-name") && i + 1 < argc) {
+            g_free(app.site_name);
+            app.site_name = g_strdup(argv[++i]);
+        } else if (!g_strcmp0(argv[i], "--notification-sound") &&
+                   i + 1 < argc) {
+            app.notification_sound = g_strdup(argv[++i]);
         } else if (!g_strcmp0(argv[i], "--help")) {
             g_print("Usage: %s [--peer ADDRESS] [--video-port PORT] "
                     "[--audio-port PORT] [--text-port PORT] "
+                    "[--site-name NAME] "
+                    "[--notification-sound WAV_FILE] "
                     "[--disable-controls] "
                     "[--disable-echo-cancellation]\n", argv[0]);
             return EXIT_SUCCESS;
@@ -867,6 +916,12 @@ int main(int argc, char **argv)
     if (app.video_port == app.audio_port || app.video_port == app.text_port ||
         app.audio_port == app.text_port) {
         g_printerr("Audio, video, and text ports must be different\n");
+        return EXIT_FAILURE;
+    }
+    if (app.notification_sound &&
+        !g_file_test(app.notification_sound, G_FILE_TEST_IS_REGULAR)) {
+        g_printerr("Notification sound is not a regular file: %s\n",
+                   app.notification_sound);
         return EXIT_FAILURE;
     }
 
@@ -896,5 +951,7 @@ int main(int argc, char **argv)
     gtk_main();
     g_array_unref(app.video_modes);
     g_free(app.video_source);
+    g_free(app.site_name);
+    g_free(app.notification_sound);
     return EXIT_SUCCESS;
 }

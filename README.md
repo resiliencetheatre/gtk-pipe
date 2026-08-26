@@ -40,6 +40,23 @@ On A:
 ./gtk-pipe --peer 192.168.1.20
 ```
 
+Use `--site-name` to identify the sender in the bottom-left overlay embedded in
+the outgoing video. The overlay has the form
+`HH:MM:SS DD.MM.YYYY SITE_NAME`; the machine hostname is used when the
+option is omitted.
+
+```sh
+./gtk-pipe --peer 192.168.1.20 --site-name Studio-A
+```
+
+To play a local WAV sound when the incoming-stream notice appears, pass its
+path with `--notification-sound`. Duplicate stream notifications do not replay
+the sound while the notice remains visible.
+
+```sh
+./gtk-pipe --peer 192.168.1.20 --notification-sound ./incoming-stream.wav
+```
+
 On B:
 
 ```sh
@@ -119,6 +136,7 @@ but scenes with motion and protocol overhead vary.
 ## Design
 
 - VP8 video is RTP payload type 96; Opus audio is RTP payload type 97.
+- The outgoing VP8 picture embeds the sender's local time, date, and site name.
 - UTF-8 text is sent as one datagram per message on UDP port 5004, with a
   maximum encoded size of 1024 bytes.
 - The text channel is available while media is stopped. It sends a heartbeat
