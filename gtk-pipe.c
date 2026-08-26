@@ -106,13 +106,15 @@ static gboolean receive_text(GSocket *socket, GIOCondition condition,
     gchar buffer[MAX_TEXT_BYTES + sizeof(TEXT_PREFIX) + 1];
     GError *error = NULL;
     gssize length;
+    (void)condition;
 
-    if (condition & (G_IO_ERR | G_IO_HUP))
-        return G_SOURCE_CONTINUE;
-
+    /* Read even on G_IO_ERR. A connected UDP socket reports an ICMP port
+     * unreachable as a pending receive error; returning without consuming it
+     * leaves the source continuously ready and spins the GTK main loop. */
     length = g_socket_receive(socket, buffer, MAX_TEXT_BYTES, NULL, &error);
     if (length < 0) {
-        if (!g_error_matches(error, G_IO_ERROR, G_IO_ERROR_WOULD_BLOCK))
+        if (!g_error_matches(error, G_IO_ERROR, G_IO_ERROR_WOULD_BLOCK) &&
+            !g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CONNECTION_REFUSED))
             g_printerr("Text receive error: %s\n", error->message);
         g_clear_error(&error);
         return G_SOURCE_CONTINUE;
