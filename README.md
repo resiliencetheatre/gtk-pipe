@@ -54,7 +54,9 @@ media stream starts.
 
 Click **Start stream** on both to exchange webcam video and microphone audio.
 The remote picture appears in the window and remote audio plays through the
-default output. Headphones avoid acoustic feedback.
+default output. The window starts 640 pixels wide but can be narrowed; received
+video scales down while retaining its aspect ratio. Headphones avoid acoustic
+feedback.
 
 ## UFW firewall
 

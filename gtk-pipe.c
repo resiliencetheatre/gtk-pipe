@@ -421,7 +421,7 @@ static void build_ui(App *app, const char *peer)
 
     app->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(app->window), "GTK Pipe");
-    gtk_window_set_default_size(GTK_WINDOW(app->window), 700, 560);
+    gtk_window_set_default_size(GTK_WINDOW(app->window), 640, 560);
     gtk_container_set_border_width(GTK_CONTAINER(app->window), 12);
     g_signal_connect(app->window, "destroy", G_CALLBACK(window_destroy), app);
 
@@ -438,7 +438,8 @@ static void build_ui(App *app, const char *peer)
     gtk_box_pack_start(GTK_BOX(controls), app->button, FALSE, FALSE, 0);
 
     app->video_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    gtk_widget_set_size_request(app->video_box, 640, 360);
+    gtk_widget_set_hexpand(app->video_box, TRUE);
+    gtk_widget_set_vexpand(app->video_box, TRUE);
     app->text_view = gtk_text_view_new();
     gtk_text_view_set_editable(GTK_TEXT_VIEW(app->text_view), FALSE);
     gtk_text_view_set_cursor_visible(GTK_TEXT_VIEW(app->text_view), FALSE);
