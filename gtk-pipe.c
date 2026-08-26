@@ -469,8 +469,9 @@ static void update_video_settings(App *app)
     const VideoMode *mode = &g_array_index(app->video_modes, VideoMode,
                                            app->quality_index);
     gchar *label = g_strdup_printf(
-        "Resolution: %d×%d    FPS: %.2f",
-        mode->width, mode->height, (gdouble)mode->fps_n / mode->fps_d);
+        "Resolution: %d×%d    FPS: %.2f    Opus: %u kbit/s",
+        mode->width, mode->height, (gdouble)mode->fps_n / mode->fps_d,
+        opus_bitrate(app) / 1000);
     if (app->video_settings_label)
         gtk_label_set_text(GTK_LABEL(app->video_settings_label), label);
     g_free(label);
