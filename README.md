@@ -76,6 +76,19 @@ are hidden and the middle discovered quality setting is used.
 ./gtk-pipe --peer 192.168.1.20 --enable-controls
 ```
 
+### Echo cancellation
+
+Pass `--echo-cancellation` when using speakers to remove the decoded remote
+audio from microphone capture. This enables GStreamer's WebRTC echo canceller,
+with moderate noise suppression and a high-pass filter; automatic gain control
+is left disabled. The unprocessed audio path remains the default and is useful
+with headphones or as a fallback. If the required `webrtcdsp` elements are not
+installed, requesting echo cancellation exits with a clear error.
+
+```sh
+./gtk-pipe --peer 192.168.1.20 --echo-cancellation
+```
+
 ## UFW firewall
 
 If UFW is active, permit the three default UDP ports on each host:

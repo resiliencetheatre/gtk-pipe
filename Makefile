@@ -19,7 +19,8 @@ check: gtk-pipe
 	./gtk-pipe --help
 	@for element in autovideosrc autoaudiosrc vp8enc rtpvp8pay opusenc \
 	  rtpopuspay udpsink udpsrc rtpjitterbuffer rtpvp8depay vp8dec \
-	  rtpopusdepay opusdec gtksink autoaudiosink; do \
+	  rtpopusdepay opusdec gtksink autoaudiosink webrtcdsp \
+	  webrtcechoprobe; do \
 	  gst-inspect-1.0 "$$element" >/dev/null || exit 1; \
 	done
 

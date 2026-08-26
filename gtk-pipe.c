@@ -53,6 +53,7 @@ typedef struct {
     gchar *video_source;
     guint quality_index;
     gboolean enable_controls;
+    gboolean echo_cancellation;
 } App;
 
 #define MAX_QUALITY_OPTIONS 4
@@ -449,6 +450,13 @@ static gchar *make_pipeline(const App *app, const char *peer)
 {
     const VideoMode *mode = &g_array_index(app->video_modes, VideoMode,
                                            app->quality_index);
+    const gchar *capture_dsp = app->echo_cancellation
+        ? "webrtcdsp probe=echo_probe echo-cancel=true gain-control=false "
+          "noise-suppression=true high-pass-filter=true ! "
+        : "";
+    const gchar *playback_probe = app->echo_cancellation
+        ? "webrtcechoprobe name=echo_probe ! "
+        : "";
     gchar *pipeline = g_strdup_printf(
         "%s ! capsfilter name=capture_caps "
         "caps=\"video/x-raw,width=%d,height=%d,framerate=%d/%d\" ! "
@@ -461,7 +469,7 @@ static gchar *make_pipeline(const App *app, const char *peer)
         "video/x-raw,width=160,height=120 ! videoconvert ! "
         "gtksink name=local_preview sync=false qos=false "
         "autoaudiosrc ! audioconvert ! audioresample ! "
-        "audio/x-raw,rate=48000,channels=1 ! queue ! "
+        "audio/x-raw,format=S16LE,rate=48000,channels=1 ! %squeue ! "
         "opusenc name=opus_encoder bitrate=%u inband-fec=true ! rtpopuspay pt=97 ! "
         "udpsink host=\"%s\" port=%u sync=false async=false "
         "udpsrc port=%u caps=\"application/x-rtp,media=video,clock-rate=90000,"
@@ -471,11 +479,13 @@ static gchar *make_pipeline(const App *app, const char *peer)
         "udpsrc port=%u caps=\"application/x-rtp,media=audio,clock-rate=48000,"
         "encoding-name=OPUS,payload=97\" ! rtpjitterbuffer latency=120 "
         "drop-on-latency=true ! rtpopusdepay ! opusdec plc=true ! "
-        "audioconvert ! audioresample ! autoaudiosink sync=false",
+        "audioconvert ! audioresample ! "
+        "audio/x-raw,format=S16LE,rate=48000 ! %sautoaudiosink sync=false",
         app->video_source, mode->width, mode->height, mode->fps_n, mode->fps_d,
-        vp8_bitrate(app), peer, app->video_port, opus_bitrate(app),
+        vp8_bitrate(app), peer, app->video_port, capture_dsp,
+        opus_bitrate(app),
         peer, app->audio_port,
-        app->video_port, app->audio_port);
+        app->video_port, app->audio_port, playback_probe);
     return pipeline;
 }
 
@@ -805,10 +815,12 @@ int main(int argc, char **argv)
             }
         } else if (!g_strcmp0(argv[i], "--enable-controls")) {
             app.enable_controls = TRUE;
+        } else if (!g_strcmp0(argv[i], "--echo-cancellation")) {
+            app.echo_cancellation = TRUE;
         } else if (!g_strcmp0(argv[i], "--help")) {
             g_print("Usage: %s [--peer ADDRESS] [--video-port PORT] "
                     "[--audio-port PORT] [--text-port PORT] "
-                    "[--enable-controls]\n", argv[0]);
+                    "[--enable-controls] [--echo-cancellation]\n", argv[0]);
             return EXIT_SUCCESS;
         } else {
             g_printerr("Unknown or incomplete option: %s\n", argv[i]);
@@ -822,6 +834,21 @@ int main(int argc, char **argv)
     }
 
     gst_init(&argc, &argv);
+    if (app.echo_cancellation) {
+        GstElementFactory *dsp = gst_element_factory_find("webrtcdsp");
+        GstElementFactory *probe = gst_element_factory_find("webrtcechoprobe");
+        if (!dsp || !probe) {
+            g_printerr("--echo-cancellation requires the GStreamer "
+                       "webrtcdsp and webrtcechoprobe elements\n");
+            if (dsp)
+                gst_object_unref(dsp);
+            if (probe)
+                gst_object_unref(probe);
+            return EXIT_FAILURE;
+        }
+        gst_object_unref(dsp);
+        gst_object_unref(probe);
+    }
     if (!discover_video_modes(&app)) {
         g_printerr("No V4L2 camera with supported raw-video modes was found\n");
         return EXIT_FAILURE;
