@@ -3,15 +3,22 @@
 #include <gst/gst.h>
 #include <gio/gio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define DEFAULT_VIDEO_PORT 5000
 #define DEFAULT_AUDIO_PORT 5002
 #define DEFAULT_TEXT_PORT 5004
 #define MAX_TEXT_BYTES 1024
+#define TEXT_PREFIX "GTKPIPE/1 TEXT "
+#define PING_MESSAGE "GTKPIPE/1 PING"
+#define PONG_MESSAGE "GTKPIPE/1 PONG"
+#define HEARTBEAT_SECONDS 2
+#define REACHABLE_TIMEOUT_SECONDS 6
 
 typedef struct {
     GtkWidget *window;
     GtkWidget *peer_entry;
+    GtkWidget *peer_indicator;
     GtkWidget *button;
     GtkWidget *status;
     GtkWidget *video_box;
@@ -23,10 +30,27 @@ typedef struct {
     guint bus_watch;
     GSocket *text_socket;
     GSource *text_source;
+    guint heartbeat_timer;
+    gchar *text_peer;
+    gint64 last_peer_seen;
     guint video_port;
     guint audio_port;
     guint text_port;
 } App;
+
+static void close_text_channel(App *app);
+
+static void set_peer_reachable(App *app, gboolean reachable)
+{
+    const char *color = reachable ? "#2ecc71" : "#808080";
+    const char *tip = reachable ? "GTK Pipe peer reachable"
+                                : "Waiting for GTK Pipe peer response";
+    gchar *markup = g_strdup_printf("<span foreground=\"%s\" size=\"large\">●</span>",
+                                    color);
+    gtk_label_set_markup(GTK_LABEL(app->peer_indicator), markup);
+    gtk_widget_set_tooltip_text(app->peer_indicator, tip);
+    g_free(markup);
+}
 
 static void set_status(App *app, const char *text)
 {
@@ -55,7 +79,7 @@ static gboolean receive_text(GSocket *socket, GIOCondition condition,
                              gpointer data)
 {
     App *app = data;
-    gchar buffer[MAX_TEXT_BYTES + 1];
+    gchar buffer[MAX_TEXT_BYTES + sizeof(TEXT_PREFIX) + 1];
     GError *error = NULL;
     gssize length;
 
@@ -72,11 +96,31 @@ static gboolean receive_text(GSocket *socket, GIOCondition condition,
     if (length == 0)
         return G_SOURCE_CONTINUE;
     buffer[length] = '\0';
-    if (!g_utf8_validate(buffer, length, NULL)) {
+
+    if (!g_strcmp0(buffer, PING_MESSAGE)) {
+        g_socket_send(socket, PONG_MESSAGE, strlen(PONG_MESSAGE), NULL, NULL);
+        app->last_peer_seen = g_get_monotonic_time();
+        set_peer_reachable(app, TRUE);
+        return G_SOURCE_CONTINUE;
+    }
+    if (!g_strcmp0(buffer, PONG_MESSAGE)) {
+        app->last_peer_seen = g_get_monotonic_time();
+        set_peer_reachable(app, TRUE);
+        return G_SOURCE_CONTINUE;
+    }
+
+    const gchar *message = g_str_has_prefix(buffer, TEXT_PREFIX)
+                         ? buffer + strlen(TEXT_PREFIX) : buffer;
+    gsize message_length = length - (message - buffer);
+    if (message_length == 0 || message_length > MAX_TEXT_BYTES ||
+        memchr(message, '\0', message_length) ||
+        !g_utf8_validate(message, message_length, NULL)) {
         g_printerr("Ignored a non-UTF-8 text datagram\n");
         return G_SOURCE_CONTINUE;
     }
-    append_message(app, "Peer", buffer);
+    app->last_peer_seen = g_get_monotonic_time();
+    set_peer_reachable(app, TRUE);
+    append_message(app, "Peer", message);
     return G_SOURCE_CONTINUE;
 }
 
@@ -109,10 +153,13 @@ static gboolean start_text_channel(App *app, const char *peer, GError **error)
     app->text_source = g_socket_create_source(app->text_socket, G_IO_IN, NULL);
     g_source_set_callback(app->text_source, G_SOURCE_FUNC(receive_text), app, NULL);
     g_source_attach(app->text_source, NULL);
+    app->text_peer = g_strdup(peer);
+    gtk_widget_set_sensitive(app->text_entry, TRUE);
+    gtk_widget_set_sensitive(app->send_button, TRUE);
     return TRUE;
 }
 
-static void stop_stream(App *app)
+static void close_text_channel(App *app)
 {
     if (app->text_source) {
         g_source_destroy(app->text_source);
@@ -120,6 +167,54 @@ static void stop_stream(App *app)
         app->text_source = NULL;
     }
     g_clear_object(&app->text_socket);
+    g_clear_pointer(&app->text_peer, g_free);
+    app->last_peer_seen = 0;
+    set_peer_reachable(app, FALSE);
+    gtk_widget_set_sensitive(app->text_entry, FALSE);
+    gtk_widget_set_sensitive(app->send_button, FALSE);
+}
+
+static gboolean refresh_text_channel(App *app)
+{
+    const char *peer = gtk_entry_get_text(GTK_ENTRY(app->peer_entry));
+    GInetAddress *address;
+    GError *error = NULL;
+
+    if (app->text_socket && !g_strcmp0(peer, app->text_peer))
+        return TRUE;
+
+    close_text_channel(app);
+    address = g_inet_address_new_from_string(peer);
+    if (!address)
+        return FALSE;
+    g_object_unref(address);
+
+    if (!start_text_channel(app, peer, &error)) {
+        g_printerr("Could not open text channel: %s\n", error->message);
+        g_clear_error(&error);
+        return FALSE;
+    }
+    return TRUE;
+}
+
+static gboolean heartbeat_text_channel(gpointer data)
+{
+    App *app = data;
+    gint64 now = g_get_monotonic_time();
+
+    if (!refresh_text_channel(app))
+        return G_SOURCE_CONTINUE;
+    if (app->last_peer_seen == 0 ||
+        now - app->last_peer_seen > REACHABLE_TIMEOUT_SECONDS * G_USEC_PER_SEC)
+        set_peer_reachable(app, FALSE);
+    if (g_socket_send(app->text_socket, PING_MESSAGE, strlen(PING_MESSAGE),
+                      NULL, NULL) < 0)
+        set_peer_reachable(app, FALSE);
+    return G_SOURCE_CONTINUE;
+}
+
+static void stop_stream(App *app)
+{
     if (app->bus_watch) {
         g_source_remove(app->bus_watch);
         app->bus_watch = 0;
@@ -135,9 +230,8 @@ static void stop_stream(App *app)
     }
     gtk_button_set_label(GTK_BUTTON(app->button), "Start stream");
     gtk_widget_set_sensitive(app->peer_entry, TRUE);
-    gtk_widget_set_sensitive(app->text_entry, FALSE);
-    gtk_widget_set_sensitive(app->send_button, FALSE);
-    set_status(app, "Stopped");
+    set_status(app, app->text_socket ? "Media stopped; text channel active"
+                                     : "Media stopped");
 }
 
 static gboolean bus_message(GstBus *bus, GstMessage *message, gpointer data)
@@ -200,12 +294,6 @@ static gboolean start_stream(App *app)
     }
     g_object_unref(address);
 
-    if (!start_text_channel(app, peer, &error)) {
-        set_status(app, error ? error->message : "Could not open the text port");
-        g_clear_error(&error);
-        return FALSE;
-    }
-
     description = make_pipeline(peer, app->video_port, app->audio_port);
     app->pipeline = gst_parse_launch(description, &error);
     g_free(description);
@@ -247,8 +335,6 @@ static gboolean start_stream(App *app)
 
     gtk_button_set_label(GTK_BUTTON(app->button), "Stop stream");
     gtk_widget_set_sensitive(app->peer_entry, FALSE);
-    gtk_widget_set_sensitive(app->text_entry, TRUE);
-    gtk_widget_set_sensitive(app->send_button, TRUE);
     gtk_widget_grab_focus(app->text_entry);
     gchar *status = g_strdup_printf(
         "Streaming with %s (video %u, audio %u, text %u UDP)",
@@ -265,16 +351,25 @@ static void send_text(GtkWidget *widget, gpointer data)
     gsize length = strlen(message);
     GError *error = NULL;
     gssize sent;
+    gchar *datagram;
+    gsize datagram_length;
     (void)widget;
 
-    if (!app->text_socket || length == 0)
+    if (length == 0)
         return;
     if (length > MAX_TEXT_BYTES) {
         set_status(app, "Text messages are limited to 1024 UTF-8 bytes");
         return;
     }
-    sent = g_socket_send(app->text_socket, message, length, NULL, &error);
-    if (sent != (gssize)length) {
+    if (!refresh_text_channel(app)) {
+        set_status(app, "Enter a valid peer address for text messaging");
+        return;
+    }
+    datagram = g_strconcat(TEXT_PREFIX, message, NULL);
+    datagram_length = strlen(datagram);
+    sent = g_socket_send(app->text_socket, datagram, datagram_length, NULL, &error);
+    g_free(datagram);
+    if (sent != (gssize)datagram_length) {
         set_status(app, error ? error->message : "Text message was not sent");
         g_clear_error(&error);
         return;
@@ -298,6 +393,11 @@ static void window_destroy(GtkWidget *widget, gpointer data)
     App *app = data;
     (void)widget;
     stop_stream(app);
+    if (app->heartbeat_timer) {
+        g_source_remove(app->heartbeat_timer);
+        app->heartbeat_timer = 0;
+    }
+    close_text_channel(app);
     gtk_main_quit();
 }
 
@@ -329,9 +429,12 @@ static void build_ui(App *app, const char *peer)
     gtk_entry_set_text(GTK_ENTRY(app->peer_entry), peer);
     gtk_entry_set_placeholder_text(GTK_ENTRY(app->peer_entry), "192.0.2.10");
     app->button = gtk_button_new_with_label("Start stream");
+    app->peer_indicator = gtk_label_new(NULL);
+    set_peer_reachable(app, FALSE);
     g_signal_connect(app->button, "clicked", G_CALLBACK(button_clicked), app);
     gtk_box_pack_start(GTK_BOX(controls), label, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(controls), app->peer_entry, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(controls), app->peer_indicator, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(controls), app->button, FALSE, FALSE, 0);
 
     app->video_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
@@ -356,7 +459,7 @@ static void build_ui(App *app, const char *peer)
     g_signal_connect(app->text_entry, "activate", G_CALLBACK(send_text), app);
     gtk_box_pack_start(GTK_BOX(message_controls), app->text_entry, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(message_controls), app->send_button, FALSE, FALSE, 0);
-    app->status = gtk_label_new("Stopped");
+    app->status = gtk_label_new("Media stopped");
     gtk_label_set_xalign(GTK_LABEL(app->status), 0.0);
     gtk_label_set_ellipsize(GTK_LABEL(app->status), PANGO_ELLIPSIZE_END);
 
@@ -367,6 +470,9 @@ static void build_ui(App *app, const char *peer)
     gtk_box_pack_start(GTK_BOX(root), app->status, FALSE, FALSE, 0);
     gtk_container_add(GTK_CONTAINER(app->window), root);
     gtk_widget_show_all(app->window);
+    heartbeat_text_channel(app);
+    app->heartbeat_timer = g_timeout_add_seconds(HEARTBEAT_SECONDS,
+                                                 heartbeat_text_channel, app);
 }
 
 int main(int argc, char **argv)

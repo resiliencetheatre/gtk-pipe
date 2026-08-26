@@ -46,10 +46,15 @@ On B:
 ./gtk-pipe --peer 192.168.1.10
 ```
 
-Click **Start stream** on both. Allow inbound UDP ports 5000, 5002, and 5004 in each
-host firewall. The remote picture appears in the window and remote audio plays
-through the default output. Enter sends a message, as does the **Send** button.
-Headphones avoid acoustic feedback.
+Allow inbound UDP ports 5000, 5002, and 5004 in each host firewall. The text
+channel starts immediately, independently of the media stream. A green dot by
+the peer address means another GTK Pipe instance has answered a recent UDP
+heartbeat. Enter sends a message, as does the **Send** button, even before the
+media stream starts.
+
+Click **Start stream** on both to exchange webcam video and microphone audio.
+The remote picture appears in the window and remote audio plays through the
+default output. Headphones avoid acoustic feedback.
 
 ## UFW firewall
 
@@ -83,10 +88,14 @@ but scenes with motion and protocol overhead vary.
 - VP8 video is RTP payload type 96; Opus audio is RTP payload type 97.
 - UTF-8 text is sent as one datagram per message on UDP port 5004, with a
   maximum encoded size of 1024 bytes.
+- The text channel is available while media is stopped. It sends a heartbeat
+  every two seconds and marks the peer reachable after a GTK Pipe `PING` or
+  `PONG`; the indicator returns to gray after six seconds without a response.
 - Separate UDP ports make firewall rules and troubleshooting straightforward.
 - A 120 ms RTP jitter buffer trades a little delay for smoother playback.
-- Start creates capture, transmit, receive, and playback together. Stop releases
-  the camera, microphone, sockets, and audio output.
+- Start creates media capture, transmit, receive, and playback. Stop releases
+  the camera, microphone, media sockets, and audio output while leaving text
+  messaging and peer detection active.
 - UDP/RTP provides no delivery guarantee. Packet loss may cause temporary
   glitches or a missing text message, which is expected for this minimal
   real-time design. Text messages are neither acknowledged nor retransmitted.
