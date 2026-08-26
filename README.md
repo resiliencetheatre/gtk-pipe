@@ -3,29 +3,32 @@
 GTK Pipe is a small, live, two-way webcam and microphone link for Linux. It
 uses GTK 3 for one start/stop window and GStreamer RTP streams over UDP. Short
 UTF-8 text messages use a third UDP channel. Run the
-same program on both computers; each peer sends to and listens on the same two
+same program on both computers; each peer sends to and listens on the same three
 ports.
 
-This is deliberately a direct LAN/VPN tool. UDP traffic is **not encrypted or
-authenticated**, and the program does not perform NAT traversal. Do not expose
-its ports directly to the public Internet; use a trusted LAN or a VPN such as
-WireGuard.
+The UDP traffic is **not encrypted or authenticated**. Anyone able to observe
+the path can read the text and recover the audio and video. For secrecy, carry
+all three UDP ports through an encrypted UDP-capable tunnel or proxy, such as
+WireGuard, and give GTK Pipe the peer's tunnel address. Do not expose the ports
+directly to the public Internet. The program does not perform NAT traversal.
 
-## Dependencies and build
+## Debian 13 dependencies and build
 
-On Debian/Ubuntu:
+On each Debian 13 (Trixie) host:
 
 ```sh
+sudo apt update
 sudo apt install build-essential pkg-config libgtk-3-dev \
   libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
   gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
-  gstreamer1.0-plugins-bad gstreamer1.0-gtk3
+  gstreamer1.0-plugins-bad gstreamer1.0-gtk3 gstreamer1.0-tools
 make
 make check
 ```
 
-`vp8enc` may be packaged in `gstreamer1.0-plugins-good` or
-`gstreamer1.0-plugins-bad`, depending on the distribution.
+The development packages provide the C headers and libraries. The plugin
+packages provide webcam/audio handling, UDP/RTP, VP8, Opus, and the GTK video
+sink. `gstreamer1.0-tools` provides `gst-inspect-1.0`, used by `make check`.
 
 ## Use on two computers
 
@@ -47,6 +50,27 @@ Click **Start stream** on both. Allow inbound UDP ports 5000, 5002, and 5004 in 
 host firewall. The remote picture appears in the window and remote audio plays
 through the default output. Enter sends a message, as does the **Send** button.
 Headphones avoid acoustic feedback.
+
+## UFW firewall
+
+If UFW is active, permit the three default UDP ports on each host:
+
+```sh
+sudo ufw allow 5000/udp comment 'gtk-pipe video'
+sudo ufw allow 5002/udp comment 'gtk-pipe audio'
+sudo ufw allow 5004/udp comment 'gtk-pipe text'
+sudo ufw status numbered
+```
+
+These generic rules do not assume a particular peer address, tunnel technology,
+network interface, or proxy arrangement. Apply them on both hosts. If the
+deployment has stable peer addresses or a dedicated tunnel interface, the
+administrator may choose narrower source- or interface-specific rules.
+
+If UFW is not enabled yet, ensure remote administration such as SSH is allowed
+before running `sudo ufw enable`, to avoid locking yourself out. Opening a port
+does not encrypt it; UFW access rules and an encrypted tunnel serve different
+purposes.
 
 Use `--video-port PORT`, `--audio-port PORT`, and `--text-port PORT` on both
 peers to change ports.
