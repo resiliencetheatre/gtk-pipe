@@ -12,6 +12,8 @@
 #define TEXT_PREFIX "GTKPIPE/1 TEXT "
 #define PING_MESSAGE "GTKPIPE/1 PING"
 #define PONG_MESSAGE "GTKPIPE/1 PONG"
+#define STREAM_STARTED_MESSAGE "GTKPIPE/1 STREAM_STARTED"
+#define INCOMING_STREAM_TEXT "Incoming Stream, press 'Start' to activate"
 #define HEARTBEAT_SECONDS 2
 #define REACHABLE_TIMEOUT_SECONDS 6
 
@@ -29,6 +31,7 @@ typedef struct {
     GtkWidget *button;
     GtkWidget *status;
     GtkWidget *video_box;
+    GtkWidget *incoming_stream_label;
     GtkWidget *video_widget;
     GtkWidget *local_video_widget;
     GtkWidget *local_preview_frame;
@@ -99,6 +102,14 @@ static void append_message(App *app, const char *who, const char *message)
     g_date_time_unref(now);
 }
 
+static void set_incoming_stream_notice(App *app, gboolean visible)
+{
+    if (visible)
+        gtk_widget_show(app->incoming_stream_label);
+    else
+        gtk_widget_hide(app->incoming_stream_label);
+}
+
 static gboolean receive_text(GSocket *socket, GIOCondition condition,
                              gpointer data)
 {
@@ -132,6 +143,13 @@ static gboolean receive_text(GSocket *socket, GIOCondition condition,
     if (!g_strcmp0(buffer, PONG_MESSAGE)) {
         app->last_peer_seen = g_get_monotonic_time();
         set_peer_reachable(app, TRUE);
+        return G_SOURCE_CONTINUE;
+    }
+    if (!g_strcmp0(buffer, STREAM_STARTED_MESSAGE)) {
+        app->last_peer_seen = g_get_monotonic_time();
+        set_peer_reachable(app, TRUE);
+        if (!app->pipeline)
+            set_incoming_stream_notice(app, TRUE);
         return G_SOURCE_CONTINUE;
     }
 
@@ -630,6 +648,10 @@ static gboolean start_stream(App *app)
 
     gtk_button_set_label(GTK_BUTTON(app->button), "Stop stream");
     gtk_widget_set_sensitive(app->peer_entry, FALSE);
+    set_incoming_stream_notice(app, FALSE);
+    if (refresh_text_channel(app))
+        g_socket_send(app->text_socket, STREAM_STARTED_MESSAGE,
+                      strlen(STREAM_STARTED_MESSAGE), NULL, NULL);
     gtk_widget_grab_focus(app->text_entry);
     gchar *status = g_strdup_printf(
         "Streaming with %s (video %u, audio %u, text %u UDP)",
@@ -738,6 +760,16 @@ static void build_ui(App *app, const char *peer)
     app->video_box = gtk_overlay_new();
     gtk_widget_set_hexpand(app->video_box, TRUE);
     gtk_widget_set_vexpand(app->video_box, TRUE);
+    app->incoming_stream_label = gtk_label_new(NULL);
+    gtk_label_set_markup(GTK_LABEL(app->incoming_stream_label),
+        "<span foreground=\"red\" size=\"large\">"
+        INCOMING_STREAM_TEXT "</span>");
+    gtk_widget_set_halign(app->incoming_stream_label, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(app->incoming_stream_label, GTK_ALIGN_START);
+    gtk_widget_set_margin_top(app->incoming_stream_label, 10);
+    gtk_widget_set_no_show_all(app->incoming_stream_label, TRUE);
+    gtk_overlay_add_overlay(GTK_OVERLAY(app->video_box),
+                            app->incoming_stream_label);
     gtk_box_pack_start(GTK_BOX(video_column), app->video_box, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(video_area), video_column, TRUE, TRUE, 0);
     if (app->enable_controls) {
