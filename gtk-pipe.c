@@ -49,7 +49,7 @@ typedef struct {
     guint audio_port;
     guint text_port;
     GArray *video_modes;
-    gchar *video_device;
+    gchar *video_source;
     guint quality_index;
     gboolean enable_controls;
 } App;
@@ -351,20 +351,14 @@ static gboolean discover_video_modes(App *app)
         return FALSE;
     }
     devices = gst_device_monitor_get_devices(monitor);
-    for (GList *item = devices; item && !app->video_device; item = item->next) {
+    for (GList *item = devices; item && !app->video_source; item = item->next) {
         GstDevice *device = item->data;
-        GstStructure *properties = gst_device_get_properties(device);
         GstCaps *caps = gst_device_get_caps(device);
-        const gchar *path = properties
-                          ? gst_structure_get_string(properties, "device.path")
-                          : NULL;
-
-        if (!path || !g_str_has_prefix(path, "/dev/video")) {
-            if (properties)
-                gst_structure_free(properties);
-            gst_caps_unref(caps);
-            continue;
-        }
+        GstElement *source = gst_device_create_element(device, NULL);
+        const gchar *factory_name = source && gst_element_get_factory(source)
+                                  ? gst_plugin_feature_get_name(GST_PLUGIN_FEATURE(
+                                        gst_element_get_factory(source)))
+                                  : NULL;
         for (guint i = 0; i < gst_caps_get_size(caps); i++) {
             const GstStructure *s = gst_caps_get_structure(caps, i);
             gint width, height;
@@ -378,17 +372,38 @@ static gboolean discover_video_modes(App *app)
             if (framerate)
                 add_framerates(all, width, height, framerate);
         }
-        if (all->len)
-            app->video_device = g_strdup(path);
-        if (properties)
-            gst_structure_free(properties);
+        if (all->len && !g_strcmp0(factory_name, "v4l2src")) {
+            gchar *path = NULL;
+            g_object_get(source, "device", &path, NULL);
+            if (path) {
+                gchar *escaped = g_strescape(path, NULL);
+                app->video_source = g_strdup_printf(
+                    "v4l2src device=\"%s\"", escaped);
+                g_free(escaped);
+                g_free(path);
+            }
+        } else if (all->len && !g_strcmp0(factory_name, "libcamerasrc")) {
+            gchar *camera_name = NULL;
+            g_object_get(source, "camera-name", &camera_name, NULL);
+            if (camera_name) {
+                gchar *escaped = g_strescape(camera_name, NULL);
+                app->video_source = g_strdup_printf(
+                    "libcamerasrc camera-name=\"%s\"", escaped);
+                g_free(escaped);
+                g_free(camera_name);
+            } else {
+                app->video_source = g_strdup("libcamerasrc");
+            }
+        }
+        if (source)
+            gst_object_unref(source);
         gst_caps_unref(caps);
     }
     g_list_free_full(devices, gst_object_unref);
     gst_device_monitor_stop(monitor);
     gst_object_unref(monitor);
 
-    if (!all->len) {
+    if (!all->len || !app->video_source) {
         g_array_unref(all);
         return FALSE;
     }
@@ -421,9 +436,8 @@ static gchar *make_pipeline(const App *app, const char *peer)
 {
     const VideoMode *mode = &g_array_index(app->video_modes, VideoMode,
                                            app->quality_index);
-    gchar *escaped_device = g_strescape(app->video_device, NULL);
     gchar *pipeline = g_strdup_printf(
-        "v4l2src device=\"%s\" ! capsfilter name=capture_caps "
+        "%s ! capsfilter name=capture_caps "
         "caps=\"video/x-raw,width=%d,height=%d,framerate=%d/%d\" ! "
         "videoconvert ! tee name=camera_tee "
         "camera_tee. ! queue ! "
@@ -444,10 +458,9 @@ static gchar *make_pipeline(const App *app, const char *peer)
         "encoding-name=OPUS,payload=97\" ! rtpjitterbuffer latency=120 "
         "drop-on-latency=true ! rtpopusdepay ! opusdec plc=true ! "
         "audioconvert ! audioresample ! autoaudiosink sync=false",
-        escaped_device, mode->width, mode->height, mode->fps_n, mode->fps_d,
+        app->video_source, mode->width, mode->height, mode->fps_n, mode->fps_d,
         peer, app->video_port, opus_bitrate(app), peer, app->audio_port,
         app->video_port, app->audio_port);
-    g_free(escaped_device);
     return pipeline;
 }
 
@@ -797,6 +810,6 @@ int main(int argc, char **argv)
     build_ui(&app, peer);
     gtk_main();
     g_array_unref(app.video_modes);
-    g_free(app.video_device);
+    g_free(app.video_source);
     return EXIT_SUCCESS;
 }
