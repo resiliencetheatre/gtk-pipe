@@ -38,6 +38,7 @@ typedef struct {
     GtkWidget *send_button;
     GstElement *pipeline;
     GstElement *capture_caps;
+    GstElement *vp8_encoder;
     GstElement *opus_encoder;
     guint bus_watch;
     GSocket *text_socket;
@@ -55,6 +56,8 @@ typedef struct {
 } App;
 
 #define MAX_QUALITY_OPTIONS 4
+#define MIN_VP8_BITRATE 100000
+#define MAX_VP8_BITRATE 2000000
 #define MIN_OPUS_BITRATE 8000
 #define MAX_OPUS_BITRATE 64000
 
@@ -242,6 +245,7 @@ static void stop_stream(App *app)
     if (app->pipeline) {
         gst_element_set_state(app->pipeline, GST_STATE_NULL);
         g_clear_pointer(&app->capture_caps, gst_object_unref);
+        g_clear_pointer(&app->vp8_encoder, gst_object_unref);
         g_clear_pointer(&app->opus_encoder, gst_object_unref);
         gst_object_unref(app->pipeline);
         app->pipeline = NULL;
@@ -432,6 +436,15 @@ static guint opus_bitrate(const App *app)
         (app->video_modes->len - 1);
 }
 
+static guint vp8_bitrate(const App *app)
+{
+    if (app->video_modes->len < 2)
+        return MIN_VP8_BITRATE;
+    return MIN_VP8_BITRATE +
+        (MAX_VP8_BITRATE - MIN_VP8_BITRATE) * app->quality_index /
+        (app->video_modes->len - 1);
+}
+
 static gchar *make_pipeline(const App *app, const char *peer)
 {
     const VideoMode *mode = &g_array_index(app->video_modes, VideoMode,
@@ -441,7 +454,8 @@ static gchar *make_pipeline(const App *app, const char *peer)
         "caps=\"video/x-raw,width=%d,height=%d,framerate=%d/%d\" ! "
         "videoconvert ! tee name=camera_tee "
         "camera_tee. ! queue ! "
-        "vp8enc deadline=1 cpu-used=8 target-bitrate=600000 keyframe-max-dist=30 "
+        "vp8enc name=vp8_encoder deadline=1 cpu-used=8 target-bitrate=%u "
+        "keyframe-max-dist=30 "
         "! rtpvp8pay pt=96 ! udpsink host=\"%s\" port=%u sync=false async=false "
         "camera_tee. ! queue leaky=downstream max-size-buffers=1 ! videoscale ! "
         "video/x-raw,width=160,height=120 ! videoconvert ! "
@@ -459,7 +473,8 @@ static gchar *make_pipeline(const App *app, const char *peer)
         "drop-on-latency=true ! rtpopusdepay ! opusdec plc=true ! "
         "audioconvert ! audioresample ! autoaudiosink sync=false",
         app->video_source, mode->width, mode->height, mode->fps_n, mode->fps_d,
-        peer, app->video_port, opus_bitrate(app), peer, app->audio_port,
+        vp8_bitrate(app), peer, app->video_port, opus_bitrate(app),
+        peer, app->audio_port,
         app->video_port, app->audio_port);
     return pipeline;
 }
@@ -487,6 +502,8 @@ static void update_video_settings(App *app)
     }
     if (app->opus_encoder)
         g_object_set(app->opus_encoder, "bitrate", opus_bitrate(app), NULL);
+    if (app->vp8_encoder)
+        g_object_set(app->vp8_encoder, "target-bitrate", vp8_bitrate(app), NULL);
 }
 
 static void quality_changed(GtkRange *range, gpointer data)
@@ -551,6 +568,8 @@ static gboolean start_stream(App *app)
 
     app->capture_caps = gst_bin_get_by_name(GST_BIN(app->pipeline),
                                              "capture_caps");
+    app->vp8_encoder = gst_bin_get_by_name(GST_BIN(app->pipeline),
+                                            "vp8_encoder");
     app->opus_encoder = gst_bin_get_by_name(GST_BIN(app->pipeline),
                                              "opus_encoder");
 

@@ -65,7 +65,8 @@ picture. At startup GTK Pipe reads the camera's native modes through its V4L2
 or libcamera provider and offers at most four settings: two from the low end
 and two from the high end. Each slider
 stop is a resolution/frame-rate pair reported by the camera. Moving toward
-higher video quality also raises the Opus bitrate from 8 kbit/s to 64 kbit/s.
+higher video quality raises the VP8 target bitrate from 100 kbit/s to 2 Mbit/s
+and the Opus bitrate from 8 kbit/s to 64 kbit/s.
 The current resolution and frame rate are printed below the picture. The
 control may be changed before starting or while streaming; an active GStreamer
 pipeline renegotiates immediately. Without this option the control and values
