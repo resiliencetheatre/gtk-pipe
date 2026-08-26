@@ -147,6 +147,9 @@ but scenes with motion and protocol overhead vary.
 - The text channel is available while media is stopped. It sends a heartbeat
   every two seconds and marks the peer reachable after a GTK Pipe `PING` or
   `PONG`; the indicator returns to gray after six seconds without a response.
+- Starting and stopping media also sends `STREAM_STARTED` and `STREAM_END`
+  control datagrams. A remote stop tears down the local stream and displays a
+  red `remote disconnected` notice for ten seconds or until media is started.
 - Separate UDP ports make firewall rules and troubleshooting straightforward.
 - A 120 ms RTP jitter buffer trades a little delay for smoother playback.
 - Start creates media capture, transmit, receive, and playback. Stop releases

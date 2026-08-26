@@ -13,9 +13,12 @@
 #define PING_MESSAGE "GTKPIPE/1 PING"
 #define PONG_MESSAGE "GTKPIPE/1 PONG"
 #define STREAM_STARTED_MESSAGE "GTKPIPE/1 STREAM_STARTED"
+#define STREAM_END_MESSAGE "GTKPIPE/1 STREAM_END"
 #define INCOMING_STREAM_TEXT "Incoming Stream, press 'Start' to activate"
+#define REMOTE_DISCONNECTED_TEXT "remote disconnected"
 #define HEARTBEAT_SECONDS 2
 #define REACHABLE_TIMEOUT_SECONDS 6
+#define REMOTE_DISCONNECTED_SECONDS 10
 
 typedef struct {
     gint width;
@@ -48,6 +51,7 @@ typedef struct {
     GSocket *text_socket;
     GSource *text_source;
     guint heartbeat_timer;
+    guint stream_notice_timer;
     gchar *text_peer;
     gint64 last_peer_seen;
     guint video_port;
@@ -69,6 +73,7 @@ typedef struct {
 #define MAX_OPUS_BITRATE 64000
 
 static void close_text_channel(App *app);
+static void stop_stream(App *app);
 
 static void set_peer_reachable(App *app, gboolean reachable)
 {
@@ -140,6 +145,36 @@ static void set_incoming_stream_notice(App *app, gboolean visible)
     }
 }
 
+static gboolean hide_stream_notice(gpointer data)
+{
+    App *app = data;
+
+    app->stream_notice_timer = 0;
+    set_incoming_stream_notice(app, FALSE);
+    return G_SOURCE_REMOVE;
+}
+
+static void show_remote_disconnected_notice(App *app)
+{
+    if (app->stream_notice_timer)
+        g_source_remove(app->stream_notice_timer);
+    gtk_label_set_markup(GTK_LABEL(app->incoming_stream_label),
+        "<span foreground=\"red\" size=\"large\">"
+        REMOTE_DISCONNECTED_TEXT "</span>");
+    gtk_widget_show(app->incoming_stream_label);
+    app->stream_notice_timer = g_timeout_add_seconds(
+        REMOTE_DISCONNECTED_SECONDS, hide_stream_notice, app);
+}
+
+static void clear_stream_notice(App *app)
+{
+    if (app->stream_notice_timer) {
+        g_source_remove(app->stream_notice_timer);
+        app->stream_notice_timer = 0;
+    }
+    set_incoming_stream_notice(app, FALSE);
+}
+
 static gboolean receive_text(GSocket *socket, GIOCondition condition,
                              gpointer data)
 {
@@ -178,8 +213,20 @@ static gboolean receive_text(GSocket *socket, GIOCondition condition,
     if (!g_strcmp0(buffer, STREAM_STARTED_MESSAGE)) {
         app->last_peer_seen = g_get_monotonic_time();
         set_peer_reachable(app, TRUE);
-        if (!app->pipeline)
+        if (!app->pipeline) {
+            clear_stream_notice(app);
+            gtk_label_set_markup(GTK_LABEL(app->incoming_stream_label),
+                "<span foreground=\"red\" size=\"large\">"
+                INCOMING_STREAM_TEXT "</span>");
             set_incoming_stream_notice(app, TRUE);
+        }
+        return G_SOURCE_CONTINUE;
+    }
+    if (!g_strcmp0(buffer, STREAM_END_MESSAGE)) {
+        app->last_peer_seen = g_get_monotonic_time();
+        set_peer_reachable(app, TRUE);
+        stop_stream(app);
+        show_remote_disconnected_notice(app);
         return G_SOURCE_CONTINUE;
     }
 
@@ -317,6 +364,16 @@ static void stop_stream(App *app)
                                      : "Media stopped");
 }
 
+static void stop_stream_and_notify(App *app)
+{
+    gboolean was_streaming = app->pipeline != NULL;
+
+    if (was_streaming && refresh_text_channel(app))
+        g_socket_send(app->text_socket, STREAM_END_MESSAGE,
+                      strlen(STREAM_END_MESSAGE), NULL, NULL);
+    stop_stream(app);
+}
+
 static gboolean bus_message(GstBus *bus, GstMessage *message, gpointer data)
 {
     App *app = data;
@@ -333,7 +390,7 @@ static gboolean bus_message(GstBus *bus, GstMessage *message, gpointer data)
         gchar *message_text = g_strdup(error->message);
         g_clear_error(&error);
         g_free(debug);
-        stop_stream(app);
+        stop_stream_and_notify(app);
         set_status(app, message_text);
         g_free(message_text);
     }
@@ -607,6 +664,8 @@ static gboolean start_stream(App *app)
     GstElement *local_sink;
     GstBus *bus;
 
+    clear_stream_notice(app);
+
     if (!address) {
         set_status(app, "Enter a numeric IPv4 or IPv6 peer address");
         return FALSE;
@@ -682,7 +741,7 @@ static gboolean start_stream(App *app)
 
     gtk_button_set_label(GTK_BUTTON(app->button), "Stop stream");
     gtk_widget_set_sensitive(app->peer_entry, FALSE);
-    set_incoming_stream_notice(app, FALSE);
+    clear_stream_notice(app);
     if (refresh_text_channel(app))
         g_socket_send(app->text_socket, STREAM_STARTED_MESSAGE,
                       strlen(STREAM_STARTED_MESSAGE), NULL, NULL);
@@ -734,7 +793,7 @@ static void button_clicked(GtkButton *button, gpointer data)
     App *app = data;
     (void)button;
     if (app->pipeline)
-        stop_stream(app);
+        stop_stream_and_notify(app);
     else
         start_stream(app);
 }
@@ -743,7 +802,8 @@ static void window_destroy(GtkWidget *widget, gpointer data)
 {
     App *app = data;
     (void)widget;
-    stop_stream(app);
+    stop_stream_and_notify(app);
+    clear_stream_notice(app);
     if (app->heartbeat_timer) {
         g_source_remove(app->heartbeat_timer);
         app->heartbeat_timer = 0;
