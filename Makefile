@@ -24,12 +24,21 @@ check: gtk-pipe
 	  gst-inspect-1.0 "$$element" >/dev/null || exit 1; \
 	done
 
-PREFIX ?= /usr/local
-install: gtk-pipe
+PREFIX ?= $(HOME)/.local
+APPLICATIONS_DIR ?= $(PREFIX)/share/applications
+ICONS_DIR ?= $(PREFIX)/share/icons/hicolor/scalable/apps
+
+install: gtk-pipe gtk-pipe.desktop gtk-pipe.svg
 	install -Dm755 gtk-pipe "$(DESTDIR)$(PREFIX)/bin/gtk-pipe"
+	install -Dm644 gtk-pipe.desktop \
+		"$(DESTDIR)$(APPLICATIONS_DIR)/gtk-pipe.desktop"
+	install -Dm644 gtk-pipe.svg \
+		"$(DESTDIR)$(ICONS_DIR)/gtk-pipe.svg"
 
 uninstall:
 	rm -f "$(DESTDIR)$(PREFIX)/bin/gtk-pipe"
+	rm -f "$(DESTDIR)$(APPLICATIONS_DIR)/gtk-pipe.desktop"
+	rm -f "$(DESTDIR)$(ICONS_DIR)/gtk-pipe.svg"
 
 clean:
 	rm -f gtk-pipe gtk-pipe.o

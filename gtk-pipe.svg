@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <title>GTK Pipe</title>
+  <desc>A black shield with a video display on a red circle</desc>
+
+  <circle cx="128" cy="128" r="116" fill="#e32636"/>
+
+  <path
+    d="M128 35 205 64v55c0 48-30 82-77 104-47-22-77-56-77-104V64z"
+    fill="#151515"
+    stroke="#000"
+    stroke-width="8"
+    stroke-linejoin="round"/>
+
+  <rect
+    x="78" y="86" width="100" height="78" rx="7"
+    fill="#fff"/>
+
+  <g fill="#151515">
+    <rect x="99" y="111" width="38" height="29" rx="5"/>
+    <path d="m141 117 18-10v37l-18-10z"/>
+  </g>
+</svg>

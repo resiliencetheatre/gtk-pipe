@@ -35,6 +35,68 @@ The development packages provide the C headers and libraries. The plugin
 packages provide webcam/audio handling, UDP/RTP, VP8, Opus, and the GTK video
 sink. `gstreamer1.0-tools` provides `gst-inspect-1.0`, used by `make check`.
 
+## Install for the current GNOME user
+
+Install the binary, GNOME application launcher, and application icon for the
+current user:
+
+```sh
+make install
+```
+
+No `sudo` is needed. By default, the files are installed as:
+
+```text
+~/.local/bin/gtk-pipe
+~/.local/share/applications/gtk-pipe.desktop
+~/.local/share/icons/hicolor/scalable/apps/gtk-pipe.svg
+```
+
+GTK Pipe should then appear in GNOME's application overview. Search for
+**GTK Pipe** to start it, or right-click the result and select **Pin to Dash**.
+The default launcher starts with `127.0.0.1` in the peer field; replace that
+address in the window with the numeric IPv4 or IPv6 address of the other
+computer.
+
+To make a destination address the launcher's default, edit the installed
+desktop entry:
+
+```sh
+nano ~/.local/share/applications/gtk-pipe.desktop
+```
+
+Change its `Exec` line from:
+
+```ini
+Exec=gtk-pipe
+```
+
+to, for example:
+
+```ini
+Exec=gtk-pipe --peer 192.168.1.20
+```
+
+Other command-line settings may be added to the same line. For a peer reached
+through WireGuard, with a fixed local bind address and site name, this could be:
+
+```ini
+Exec=gtk-pipe --peer 10.10.0.2 --bind 10.10.0.1 --site-name Studio-A
+```
+
+Use the other computer's address on each machine. GNOME normally notices the
+saved desktop-entry change automatically; close and reopen the application
+overview if an already-open view still shows the old launcher. A later
+`make install` replaces the installed desktop entry with the repository's
+`gtk-pipe.desktop`. To keep a default in future installs, make the same `Exec`
+change in that source file before installing.
+
+To remove the user installation:
+
+```sh
+make uninstall
+```
+
 ## Use on two computers
 
 Assume computer A is `192.168.1.10` and computer B is `192.168.1.20`.

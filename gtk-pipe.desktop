@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=GTK Pipe
+GenericName=Video and Audio Link
+Comment=Two-way webcam, microphone, and text link
+Exec=gtk-pipe
+TryExec=gtk-pipe
+Icon=gtk-pipe
+Terminal=false
+Categories=Network;VideoConference;
+Keywords=video;audio;webcam;microphone;RTP;
