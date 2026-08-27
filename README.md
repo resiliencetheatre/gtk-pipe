@@ -68,6 +68,17 @@ On B:
 ./gtk-pipe --peer 192.168.1.10
 ```
 
+By default, the three receiving sockets listen on all local addresses, as in
+previous versions. Use `--bind IP` to restrict all receiving listeners to one
+numeric local IPv4 or IPv6 address. For example, to receive only through a
+WireGuard address:
+
+```sh
+./gtk-pipe --peer 10.10.0.2 --bind 10.10.0.1
+```
+
+The bind address and peer address must use the same address family.
+
 Allow inbound UDP ports 5000, 5002, and 5004 in each host firewall. The text
 channel starts immediately, independently of the media stream. A green dot by
 the peer address means another GTK Pipe instance has answered a recent UDP

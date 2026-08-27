@@ -57,6 +57,7 @@ typedef struct {
     guint video_port;
     guint audio_port;
     guint text_port;
+    gchar *bind_address;
     GArray *video_modes;
     gchar *video_source;
     gchar *site_name;
@@ -248,16 +249,26 @@ static gboolean receive_text(GSocket *socket, GIOCondition condition,
 static gboolean start_text_channel(App *app, const char *peer, GError **error)
 {
     GInetAddress *address = g_inet_address_new_from_string(peer);
+    GInetAddress *local_address = app->bind_address
+        ? g_inet_address_new_from_string(app->bind_address)
+        : g_inet_address_new_any(g_inet_address_get_family(address));
     GSocketAddress *local;
     GSocketAddress *remote;
     GSocketFamily family = g_inet_address_get_family(address);
-    GInetAddress *any = g_inet_address_new_any(family);
+
+    if (g_inet_address_get_family(local_address) != family) {
+        g_set_error(error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+                    "Bind and peer addresses use different address families");
+        g_object_unref(local_address);
+        g_object_unref(address);
+        return FALSE;
+    }
 
     app->text_socket = g_socket_new(family, G_SOCKET_TYPE_DATAGRAM,
                                     G_SOCKET_PROTOCOL_UDP, error);
-    local = g_inet_socket_address_new(any, app->text_port);
+    local = g_inet_socket_address_new(local_address, app->text_port);
     remote = g_inet_socket_address_new(address, app->text_port);
-    g_object_unref(any);
+    g_object_unref(local_address);
     g_object_unref(address);
 
     if (!app->text_socket ||
@@ -565,6 +576,11 @@ static gchar *make_pipeline(const App *app, const char *peer)
         ? "webrtcechoprobe name=echo_probe ! "
         : "";
     gchar *escaped_site_name = g_strescape(app->site_name, NULL);
+    gchar *escaped_bind_address = app->bind_address
+        ? g_strescape(app->bind_address, NULL) : NULL;
+    gchar *receiver_address = escaped_bind_address
+        ? g_strdup_printf("address=\"%s\" ", escaped_bind_address)
+        : g_strdup("");
     gchar *pipeline = g_strdup_printf(
         "%s ! capsfilter name=capture_caps "
         "caps=\"video/x-raw,width=%d,height=%d,framerate=%d/%d\" ! "
@@ -582,11 +598,11 @@ static gchar *make_pipeline(const App *app, const char *peer)
         "audio/x-raw,format=S16LE,rate=48000,channels=1 ! %squeue ! "
         "opusenc name=opus_encoder bitrate=%u inband-fec=true ! rtpopuspay pt=97 ! "
         "udpsink host=\"%s\" port=%u sync=false async=false "
-        "udpsrc port=%u caps=\"application/x-rtp,media=video,clock-rate=90000,"
+        "udpsrc %sport=%u caps=\"application/x-rtp,media=video,clock-rate=90000,"
         "encoding-name=VP8,payload=96\" ! rtpjitterbuffer latency=120 "
         "drop-on-latency=true ! rtpvp8depay ! vp8dec ! videoconvert ! "
         "gtksink name=remote_video sync=false "
-        "udpsrc port=%u caps=\"application/x-rtp,media=audio,clock-rate=48000,"
+        "udpsrc %sport=%u caps=\"application/x-rtp,media=audio,clock-rate=48000,"
         "encoding-name=OPUS,payload=97\" ! rtpjitterbuffer latency=120 "
         "drop-on-latency=true ! rtpopusdepay ! opusdec plc=true ! "
         "audioconvert ! audioresample ! "
@@ -595,7 +611,10 @@ static gchar *make_pipeline(const App *app, const char *peer)
         escaped_site_name, vp8_bitrate(app), peer, app->video_port, capture_dsp,
         opus_bitrate(app),
         peer, app->audio_port,
-        app->video_port, app->audio_port, playback_probe);
+        receiver_address, app->video_port,
+        receiver_address, app->audio_port, playback_probe);
+    g_free(receiver_address);
+    g_free(escaped_bind_address);
     g_free(escaped_site_name);
     return pipeline;
 }
@@ -938,6 +957,14 @@ int main(int argc, char **argv)
     for (int i = 1; i < argc; i++) {
         if (!g_strcmp0(argv[i], "--peer") && i + 1 < argc)
             peer = argv[++i];
+        else if (!g_strcmp0(argv[i], "--bind") && i + 1 < argc) {
+            GInetAddress *address = g_inet_address_new_from_string(argv[++i]);
+            if (!address) {
+                g_printerr("Invalid bind address\n"); return EXIT_FAILURE;
+            }
+            g_object_unref(address);
+            app.bind_address = g_strdup(argv[i]);
+        }
         else if (!g_strcmp0(argv[i], "--video-port") && i + 1 < argc) {
             if (!parse_port(argv[++i], &app.video_port)) {
                 g_printerr("Invalid video port\n"); return EXIT_FAILURE;
@@ -961,7 +988,7 @@ int main(int argc, char **argv)
                    i + 1 < argc) {
             app.notification_sound = g_strdup(argv[++i]);
         } else if (!g_strcmp0(argv[i], "--help")) {
-            g_print("Usage: %s [--peer ADDRESS] [--video-port PORT] "
+            g_print("Usage: %s [--peer ADDRESS] [--bind IP] [--video-port PORT] "
                     "[--audio-port PORT] [--text-port PORT] "
                     "[--site-name NAME] "
                     "[--notification-sound WAV_FILE] "
@@ -1013,5 +1040,6 @@ int main(int argc, char **argv)
     g_free(app.video_source);
     g_free(app.site_name);
     g_free(app.notification_sound);
+    g_free(app.bind_address);
     return EXIT_SUCCESS;
 }
