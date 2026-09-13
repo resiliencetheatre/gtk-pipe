@@ -247,3 +247,75 @@ but scenes with motion and protocol overhead vary.
 The UI and build style follow the native C/GTK3/GStreamer approach used by the
 [VisualPTT project](https://github.com/resiliencetheatre/visualptt), while the
 transport is live RTP/UDP instead of completed files.
+
+
+## Optional SmartCard-HSM secure mode
+
+Standalone operation and the **GTK Pipe** GNOME launcher work as before. The
+additional **GTK Pipe Secure** launcher opens a provisioned hsmproxy profile.
+Install the separately built `hsmproxy` binary on your desktop session's PATH,
+then run:
+
+```sh
+gtk-pipe --secure
+# Or select the profile directly:
+gtk-pipe --secure-config /etc/hsmproxy/site-a.ini
+# An explicit executable path is supported:
+gtk-pipe --secure-config /etc/hsmproxy/site-a.ini --hsmproxy /usr/local/bin/hsmproxy
+```
+
+This requires hsmproxy with the HSPUI1 supervision interface. It is launched as
+an unprivileged child; do not launch another manual proxy for the same profile.
+The profile supplies existing card/reader selection, public keys, independently
+verified peer pin, tunnel endpoints, and ports. Use absolute paths in profiles.
+Provisioning, SO-PIN operations, and trust enrollment remain administrative tasks.
+
+The window discovers the configured card before enabling PIN entry. Press
+**Connect…** and enter its user PIN. PINs are never saved, passed in arguments,
+or retried automatically. Low/final-attempt and blocked-PIN warnings appear when
+the card provider supplies them. Card detection, verified local identity,
+established tunnel, and the remote GTK Pipe heartbeat are separate indicators.
+
+Text and media controls require the secure tunnel. **Stop stream** keeps text
+and the tunnel; **Disconnect & lock** ends this application's backend/login
+session. After disconnect or failure, select **Check card / reconnect** to
+resume discovery and enter a fresh PIN. Change profile is available when the
+old backend has exited. Card monitoring is explicitly shown as inactive while
+no backend is running. Closing the window closes the backend too.
+
+**Refresh session** requests rekey. This first version stops media whenever it
+observes forwarding become unavailable, including rekey; press Start stream
+after the secure connection returns. Capture never restarts automatically after
+an observed interruption. A very short rekey may finish between snapshots.
+
+Secure mode fixes application bind/peer addresses to `127.0.0.1`/`127.0.0.2` and
+uses backend-provided ports and the negotiated video RTP MTU. Do not combine it
+with address, port, or RTP-MTU overrides. Oversize text is rejected locally.
+Measure audio datagrams against the payload budget as well. A camera is optional
+for secure-mode card management and text; media requires a supported camera.
+
+Host firewall rules must block direct plaintext application traffic on physical
+interfaces and permit the configured encrypted tunnel traffic. Secure mode never
+falls back to standalone operation. The original standalone mode remains an
+explicit independent choice.
+
+`make install` installs both desktop entries. To give the secure entry a fixed
+profile, change its Exec line to `gtk-pipe --secure-config /etc/hsmproxy/site-a.ini`.
+If hsmproxy is outside PATH, include `--hsmproxy /absolute/path/to/hsmproxy`.
+Neither build nor installation requires the hsmproxy source checkout.
+
+### Frontend tests
+
+`make check` also checks strict HSPUI1 snapshot parsing. `make check-ui` uses
+Python 3 and GTK3 `broadwayd` to create an isolated headless display and run PIN,
+reconnect, error, timeout, and teardown tests against a test-only fake backend.
+No real card, camera, or peer is used. Test fixtures are never installed.
+Real-card two-host testing, including packet sizes and card removal during media,
+is a separate acceptance step.
+
+`make check-ui-sanitize` runs the same controller and application-gating tests
+under AddressSanitizer and UndefinedBehaviorSanitizer (GTK leak detection is
+disabled for toolkit/global allocations). The application test uses a synthetic
+video source to check capture teardown, alongside standalone text, negotiated
+video MTU, and text-size enforcement. Backend-error delivery is tested against
+immediate child exit as well as normal shutdown.

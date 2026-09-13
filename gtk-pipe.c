@@ -4,6 +4,7 @@
 #include <gio/gio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "secure.h"
 
 #define DEFAULT_VIDEO_PORT 5000
 #define DEFAULT_AUDIO_PORT 5002
@@ -30,6 +31,10 @@ typedef struct {
 } VideoMode;
 
 typedef struct {
+    Secure *secure;
+    const char *secure_config, *hsmproxy_binary;
+    gboolean secure_mode, secure_ready;
+    guint secure_payload;
     GtkWidget *window;
     GtkWidget *peer_entry;
     GtkWidget *peer_indicator;
@@ -275,7 +280,7 @@ static gboolean start_text_channel(App *app, const char *peer, GError **error)
     g_object_unref(address);
 
     if (!app->text_socket ||
-        !g_socket_bind(app->text_socket, local, TRUE, error) ||
+        !g_socket_bind(app->text_socket, local, !app->secure_mode, error) ||
         !g_socket_connect(app->text_socket, remote, NULL, error)) {
         g_clear_object(&app->text_socket);
         g_object_unref(local);
@@ -311,6 +316,10 @@ static void close_text_channel(App *app)
 
 static gboolean refresh_text_channel(App *app)
 {
+    if (app->secure_mode && !app->secure_ready) {
+        close_text_channel(app);
+        return FALSE;
+    }
     const char *peer = gtk_entry_get_text(GTK_ENTRY(app->peer_entry));
     GInetAddress *address;
     GError *error = NULL;
@@ -326,6 +335,7 @@ static gboolean refresh_text_channel(App *app)
 
     if (!start_text_channel(app, peer, &error)) {
         g_printerr("Could not open text channel: %s\n", error->message);
+        if (app->secure_mode) set_status(app, error ? error->message : "Local text channel unavailable");
         g_clear_error(&error);
         return FALSE;
     }
@@ -373,7 +383,7 @@ static void stop_stream(App *app)
         app->local_video_widget = NULL;
     }
     gtk_button_set_label(GTK_BUTTON(app->button), "Start stream");
-    gtk_widget_set_sensitive(app->peer_entry, TRUE);
+    gtk_widget_set_sensitive(app->peer_entry, !app->secure_mode);
     set_status(app, app->text_socket ? "Media stopped; text channel active"
                                      : "Media stopped");
 }
@@ -582,7 +592,7 @@ static gchar *make_pipeline(const App *app, const char *peer)
     gchar *escaped_bind_address = app->bind_address
         ? g_strescape(app->bind_address, NULL) : NULL;
     gchar *receiver_address = escaped_bind_address
-        ? g_strdup_printf("address=\"%s\" ", escaped_bind_address)
+        ? g_strdup_printf("%saddress=\"%s\" ", app->secure_mode ? "reuse=false " : "", escaped_bind_address)
         : g_strdup("");
     gchar *pipeline = g_strdup_printf(
         "%s ! capsfilter name=capture_caps "
@@ -593,7 +603,7 @@ static gchar *make_pipeline(const App *app, const char *peer)
         "halignment=left valignment=bottom shaded-background=true ! "
         "vp8enc name=vp8_encoder deadline=1 cpu-used=8 target-bitrate=%u "
         "keyframe-max-dist=30 "
-        "! rtpvp8pay pt=96 mtu=%u ! udpsink host=\"%s\" port=%u sync=false async=false "
+        "! rtpvp8pay name=video_pay pt=96 mtu=%u ! udpsink host=\"%s\" port=%u sync=false async=false "
         "camera_tee. ! queue leaky=downstream max-size-buffers=1 ! videoscale ! "
         "video/x-raw,width=160,height=120 ! videoconvert ! "
         "gtksink name=local_preview sync=false qos=false "
@@ -679,6 +689,10 @@ static GtkWidget *make_vertical_control(const char *title, guint maximum,
 
 static gboolean start_stream(App *app)
 {
+    if ((app->secure_mode && !app->secure_ready) || !app->video_source) {
+        set_status(app, !app->video_source ? "No camera available; text remains usable" : "Connect the secure tunnel first");
+        return FALSE;
+    }
     const char *peer = gtk_entry_get_text(GTK_ENTRY(app->peer_entry));
     GInetAddress *address = g_inet_address_new_from_string(peer);
     GError *error = NULL;
@@ -800,6 +814,11 @@ static void send_text(GtkWidget *widget, gpointer data)
     }
     datagram = g_strconcat(TEXT_PREFIX, message, NULL);
     datagram_length = strlen(datagram);
+    if (app->secure_mode && datagram_length > app->secure_payload) {
+        set_status(app, "Message exceeds this tunnel’s payload limit; shorten the message");
+        g_free(datagram);
+        return;
+    }
     sent = g_socket_send(app->text_socket, datagram, datagram_length, NULL, &error);
     g_free(datagram);
     if (sent != (gssize)datagram_length) {
@@ -837,6 +856,7 @@ static void window_destroy(GtkWidget *widget, gpointer data)
         gst_object_unref(app->notification_player);
         app->notification_player = NULL;
     }
+    secure_free(app->secure); app->secure = NULL;
     gtk_main_quit();
 }
 
@@ -861,6 +881,35 @@ static gboolean parse_rtp_mtu(const char *text, guint *mtu)
     return TRUE;
 }
 
+static void secure_changed(gpointer data, const SecureStatus *status)
+{
+    App *app = data;
+    gboolean ready = status->state == SEC_ESTABLISHED;
+    app->secure_ready = ready;
+    if (ready) {
+        gboolean ports_changed = app->video_port != status->ports[0] ||
+            app->audio_port != status->ports[1] || app->text_port != status->ports[2];
+        if (ports_changed) { stop_stream(app); close_text_channel(app); }
+        app->video_port = status->ports[0]; app->audio_port = status->ports[1];
+        app->text_port = status->ports[2];
+        app->secure_payload = status->mtu;
+        app->rtp_mtu = status->mtu;
+        if (app->pipeline) {
+            GstElement *pay = gst_bin_get_by_name(GST_BIN(app->pipeline), "video_pay");
+            if (pay) { g_object_set(pay, "mtu", app->rtp_mtu, NULL); gst_object_unref(pay); }
+        }
+        refresh_text_channel(app);
+    } else {
+        /* Stop capture on any loss of forwarding. Reconnection never turns the
+         * camera/microphone on without a new Start action. */
+        if (app->pipeline) stop_stream(app);
+        close_text_channel(app);
+        clear_stream_notice(app);
+    }
+    gtk_widget_set_sensitive(app->button, ready && app->video_source != NULL);
+    gtk_widget_set_sensitive(app->peer_entry, FALSE);
+}
+
 static void build_ui(App *app, const char *peer)
 {
     GtkWidget *root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
@@ -873,7 +922,7 @@ static void build_ui(App *app, const char *peer)
     GtkWidget *quality_control;
 
     app->window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(app->window), "GTK Pipe");
+    gtk_window_set_title(GTK_WINDOW(app->window), app->secure_mode ? "GTK Pipe — Secure" : "GTK Pipe");
     gtk_window_set_default_size(GTK_WINDOW(app->window), 640, 560);
     gtk_container_set_border_width(GTK_CONTAINER(app->window), 12);
     g_signal_connect(app->window, "destroy", G_CALLBACK(window_destroy), app);
@@ -885,6 +934,12 @@ static void build_ui(App *app, const char *peer)
     app->peer_indicator = gtk_label_new(NULL);
     set_peer_reachable(app, FALSE);
     g_signal_connect(app->button, "clicked", G_CALLBACK(button_clicked), app);
+    if (app->secure_mode) {
+        gtk_label_set_text(GTK_LABEL(label), "Peer app:");
+        gtk_widget_set_no_show_all(app->peer_entry, TRUE);
+        gtk_widget_hide(app->peer_entry);
+        gtk_widget_set_sensitive(app->peer_entry, FALSE);
+    }
     gtk_box_pack_start(GTK_BOX(controls), label, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(controls), app->peer_entry, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(controls), app->peer_indicator, FALSE, FALSE, 0);
@@ -946,6 +1001,13 @@ static void build_ui(App *app, const char *peer)
     gtk_label_set_xalign(GTK_LABEL(app->status), 0.0);
     gtk_label_set_ellipsize(GTK_LABEL(app->status), PANGO_ELLIPSIZE_END);
 
+    if (app->secure_mode) {
+        app->secure = secure_new(GTK_WINDOW(app->window), app->secure_config,
+                                 app->hsmproxy_binary, secure_changed, app);
+        if (!app->secure) g_error("Cannot protect the PIN entry process from core dumps");
+        gtk_box_pack_start(GTK_BOX(root), secure_widget(app->secure), FALSE, FALSE, 0);
+        gtk_widget_set_sensitive(app->button, FALSE);
+    }
     gtk_box_pack_start(GTK_BOX(root), controls, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(root), video_area, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(root), text_scroll, FALSE, TRUE, 0);
@@ -953,6 +1015,7 @@ static void build_ui(App *app, const char *peer)
     gtk_box_pack_start(GTK_BOX(root), app->status, FALSE, FALSE, 0);
     gtk_container_add(GTK_CONTAINER(app->window), root);
     gtk_widget_show_all(app->window);
+    if (app->secure) secure_start(app->secure);
     heartbeat_text_channel(app);
     app->heartbeat_timer = g_timeout_add_seconds(HEARTBEAT_SECONDS,
                                                  heartbeat_text_channel, app);
@@ -967,13 +1030,23 @@ int main(int argc, char **argv)
                 .enable_controls = TRUE,
                 .echo_cancellation = TRUE };
     const char *peer = "127.0.0.1";
+    gboolean explicit_network = FALSE;
+    app.hsmproxy_binary = "hsmproxy";
 
     app.site_name = g_strdup(g_get_host_name());
 
     for (int i = 1; i < argc; i++) {
-        if (!g_strcmp0(argv[i], "--peer") && i + 1 < argc)
-            peer = argv[++i];
+        if (!g_strcmp0(argv[i], "--secure") && !app.secure_mode)
+            app.secure_mode = TRUE;
+        else if (!g_strcmp0(argv[i], "--secure-config") && i + 1 < argc && !app.secure_config) {
+            app.secure_mode = TRUE; app.secure_config = argv[++i];
+        } else if (!g_strcmp0(argv[i], "--hsmproxy") && i + 1 < argc)
+            app.hsmproxy_binary = argv[++i];
+        else if (!g_strcmp0(argv[i], "--peer") && i + 1 < argc) {
+            explicit_network = TRUE; peer = argv[++i];
+        }
         else if (!g_strcmp0(argv[i], "--bind") && i + 1 < argc) {
+            explicit_network = TRUE;
             GInetAddress *address = g_inet_address_new_from_string(argv[++i]);
             if (!address) {
                 g_printerr("Invalid bind address\n"); return EXIT_FAILURE;
@@ -982,18 +1055,22 @@ int main(int argc, char **argv)
             app.bind_address = g_strdup(argv[i]);
         }
         else if (!g_strcmp0(argv[i], "--video-port") && i + 1 < argc) {
+            explicit_network = TRUE;
             if (!parse_port(argv[++i], &app.video_port)) {
                 g_printerr("Invalid video port\n"); return EXIT_FAILURE;
             }
         } else if (!g_strcmp0(argv[i], "--audio-port") && i + 1 < argc) {
+            explicit_network = TRUE;
             if (!parse_port(argv[++i], &app.audio_port)) {
                 g_printerr("Invalid audio port\n"); return EXIT_FAILURE;
             }
         } else if (!g_strcmp0(argv[i], "--text-port") && i + 1 < argc) {
+            explicit_network = TRUE;
             if (!parse_port(argv[++i], &app.text_port)) {
                 g_printerr("Invalid text port\n"); return EXIT_FAILURE;
             }
         } else if (!g_strcmp0(argv[i], "--rtp-mtu") && i + 1 < argc) {
+            explicit_network = TRUE;
             if (!parse_rtp_mtu(argv[++i], &app.rtp_mtu)) {
                 g_printerr("Invalid RTP MTU (must be between %u and %u bytes)\n",
                            MIN_RTP_MTU, G_MAXUINT);
@@ -1015,6 +1092,7 @@ int main(int argc, char **argv)
                     "[--rtp-mtu BYTES] "
                     "[--site-name NAME] "
                     "[--notification-sound WAV_FILE] "
+                    "[--secure | --secure-config FILE] [--hsmproxy EXECUTABLE] "
                     "[--disable-controls] "
                     "[--disable-echo-cancellation]\n", argv[0]);
             return EXIT_SUCCESS;
@@ -1022,6 +1100,14 @@ int main(int argc, char **argv)
             g_printerr("Unknown or incomplete option: %s\n", argv[i]);
             return EXIT_FAILURE;
         }
+    }
+    if (app.secure_mode && explicit_network) {
+        g_printerr("Secure mode obtains addresses, ports and RTP MTU from the backend; omit network overrides\n");
+        return EXIT_FAILURE;
+    }
+    if (app.secure_mode) {
+        peer = "127.0.0.2";
+        app.bind_address = g_strdup("127.0.0.1");
     }
     if (app.video_port == app.audio_port || app.video_port == app.text_port ||
         app.audio_port == app.text_port) {
@@ -1035,6 +1121,22 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
+    if (app.secure_mode) {
+        g_set_prgname("gtk-pipe-secure");
+        g_set_application_name("GTK Pipe Secure");
+    }
+    gtk_init(&argc, &argv);
+    gchar *chosen_config = NULL;
+    if (app.secure_mode && !app.secure_config) {
+        GtkWidget *chooser = gtk_file_chooser_dialog_new("Select provisioned hsmproxy profile", NULL,
+            GTK_FILE_CHOOSER_ACTION_OPEN, "Cancel", GTK_RESPONSE_CANCEL, "Open", GTK_RESPONSE_ACCEPT, NULL);
+        gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(chooser), "/etc/hsmproxy");
+        if (gtk_dialog_run(GTK_DIALOG(chooser)) == GTK_RESPONSE_ACCEPT)
+            chosen_config = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(chooser));
+        gtk_widget_destroy(chooser);
+        if (!chosen_config) return EXIT_SUCCESS;
+        app.secure_config = chosen_config;
+    }
     gst_init(&argc, &argv);
     if (app.echo_cancellation) {
         GstElementFactory *dsp = gst_element_factory_find("webrtcdsp");
@@ -1054,9 +1156,10 @@ int main(int argc, char **argv)
     }
     if (!discover_video_modes(&app)) {
         g_printerr("No V4L2 camera with supported raw-video modes was found\n");
-        return EXIT_FAILURE;
+        if (!app.secure_mode) return EXIT_FAILURE;
+        app.enable_controls = FALSE;
+        app.video_modes = g_array_new(FALSE, FALSE, sizeof(VideoMode));
     }
-    gtk_init(&argc, &argv);
     build_ui(&app, peer);
     gtk_main();
     g_array_unref(app.video_modes);
@@ -1064,5 +1167,6 @@ int main(int argc, char **argv)
     g_free(app.site_name);
     g_free(app.notification_sound);
     g_free(app.bind_address);
+    g_free(chosen_config);
     return EXIT_SUCCESS;
 }

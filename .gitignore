@@ -1,2 +1,7 @@
 gtk-pipe
 *.o
+
+/tests/test_protocol
+/tests/test_secure
+/tests/test_app
+/tests/*_sanitize

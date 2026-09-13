@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=GTK Pipe Secure
+GenericName=Smartcard Video and Audio Link
+Comment=Select a provisioned profile and connect using SmartCard-HSM
+Exec=gtk-pipe --secure
+TryExec=gtk-pipe
+Icon=gtk-pipe
+Terminal=false
+StartupWMClass=gtk-pipe-secure
+Categories=Network;VideoConference;
+Keywords=video;audio;smartcard;HSM;secure;
