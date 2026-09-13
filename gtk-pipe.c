@@ -9,6 +9,8 @@
 #define DEFAULT_AUDIO_PORT 5002
 #define DEFAULT_TEXT_PORT 5004
 #define MAX_TEXT_BYTES 1024
+#define DEFAULT_RTP_MTU 1400
+#define MIN_RTP_MTU 28
 #define TEXT_PREFIX "GTKPIPE/1 TEXT "
 #define PING_MESSAGE "GTKPIPE/1 PING"
 #define PONG_MESSAGE "GTKPIPE/1 PONG"
@@ -57,6 +59,7 @@ typedef struct {
     guint video_port;
     guint audio_port;
     guint text_port;
+    guint rtp_mtu;
     gchar *bind_address;
     GArray *video_modes;
     gchar *video_source;
@@ -590,7 +593,7 @@ static gchar *make_pipeline(const App *app, const char *peer)
         "halignment=left valignment=bottom shaded-background=true ! "
         "vp8enc name=vp8_encoder deadline=1 cpu-used=8 target-bitrate=%u "
         "keyframe-max-dist=30 "
-        "! rtpvp8pay pt=96 ! udpsink host=\"%s\" port=%u sync=false async=false "
+        "! rtpvp8pay pt=96 mtu=%u ! udpsink host=\"%s\" port=%u sync=false async=false "
         "camera_tee. ! queue leaky=downstream max-size-buffers=1 ! videoscale ! "
         "video/x-raw,width=160,height=120 ! videoconvert ! "
         "gtksink name=local_preview sync=false qos=false "
@@ -608,7 +611,8 @@ static gchar *make_pipeline(const App *app, const char *peer)
         "audioconvert ! audioresample ! "
         "audio/x-raw,format=S16LE,rate=48000 ! %sautoaudiosink sync=false",
         app->video_source, mode->width, mode->height, mode->fps_n, mode->fps_d,
-        escaped_site_name, vp8_bitrate(app), peer, app->video_port, capture_dsp,
+        escaped_site_name, vp8_bitrate(app), app->rtp_mtu, peer, app->video_port,
+        capture_dsp,
         opus_bitrate(app),
         peer, app->audio_port,
         receiver_address, app->video_port,
@@ -846,6 +850,17 @@ static gboolean parse_port(const char *text, guint *port)
     return TRUE;
 }
 
+static gboolean parse_rtp_mtu(const char *text, guint *mtu)
+{
+    char *end = NULL;
+    unsigned long value = strtoul(text, &end, 10);
+    if (!*text || !end || *end || value < MIN_RTP_MTU ||
+        value > G_MAXUINT)
+        return FALSE;
+    *mtu = (guint)value;
+    return TRUE;
+}
+
 static void build_ui(App *app, const char *peer)
 {
     GtkWidget *root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
@@ -948,6 +963,7 @@ int main(int argc, char **argv)
     App app = { .video_port = DEFAULT_VIDEO_PORT,
                 .audio_port = DEFAULT_AUDIO_PORT,
                 .text_port = DEFAULT_TEXT_PORT,
+                .rtp_mtu = DEFAULT_RTP_MTU,
                 .enable_controls = TRUE,
                 .echo_cancellation = TRUE };
     const char *peer = "127.0.0.1";
@@ -977,6 +993,12 @@ int main(int argc, char **argv)
             if (!parse_port(argv[++i], &app.text_port)) {
                 g_printerr("Invalid text port\n"); return EXIT_FAILURE;
             }
+        } else if (!g_strcmp0(argv[i], "--rtp-mtu") && i + 1 < argc) {
+            if (!parse_rtp_mtu(argv[++i], &app.rtp_mtu)) {
+                g_printerr("Invalid RTP MTU (must be between %u and %u bytes)\n",
+                           MIN_RTP_MTU, G_MAXUINT);
+                return EXIT_FAILURE;
+            }
         } else if (!g_strcmp0(argv[i], "--disable-controls")) {
             app.enable_controls = FALSE;
         } else if (!g_strcmp0(argv[i], "--disable-echo-cancellation")) {
@@ -990,6 +1012,7 @@ int main(int argc, char **argv)
         } else if (!g_strcmp0(argv[i], "--help")) {
             g_print("Usage: %s [--peer ADDRESS] [--bind IP] [--video-port PORT] "
                     "[--audio-port PORT] [--text-port PORT] "
+                    "[--rtp-mtu BYTES] "
                     "[--site-name NAME] "
                     "[--notification-sound WAV_FILE] "
                     "[--disable-controls] "

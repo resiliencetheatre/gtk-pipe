@@ -139,6 +139,18 @@ WireGuard address:
 ./gtk-pipe --peer 10.10.0.2 --bind 10.10.0.1
 ```
 
+When a tunnel or proxy limits application UDP payloads, use `--rtp-mtu` to
+limit outgoing VP8 RTP packets. The value is the complete RTP UDP payload size,
+including its headers; it is not an IP interface MTU. For hsmproxy configured
+with `max_payload = 1100`, start GTK Pipe on both peers with:
+
+```sh
+./gtk-pipe --peer 10.0.0.14 --bind 10.0.0.10 --rtp-mtu 1100
+```
+
+The default is 1400 bytes, preserving the previous behavior. This option
+limits video packetization; audio remains on its existing Opus packetization.
+
 The bind address and peer address must use the same address family.
 
 Allow inbound UDP ports 5000, 5002, and 5004 in each host firewall. The text
