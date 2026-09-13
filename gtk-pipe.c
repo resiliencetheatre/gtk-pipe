@@ -1038,6 +1038,8 @@ int main(int argc, char **argv)
     for (int i = 1; i < argc; i++) {
         if (!g_strcmp0(argv[i], "--secure") && !app.secure_mode)
             app.secure_mode = TRUE;
+        else if (!g_strcmp0(argv[i], "--ini-file") && i + 1 < argc && !app.secure_config)
+            app.secure_config = argv[++i];
         else if (!g_strcmp0(argv[i], "--secure-config") && i + 1 < argc && !app.secure_config) {
             app.secure_mode = TRUE; app.secure_config = argv[++i];
         } else if (!g_strcmp0(argv[i], "--hsmproxy") && i + 1 < argc)
@@ -1092,7 +1094,8 @@ int main(int argc, char **argv)
                     "[--rtp-mtu BYTES] "
                     "[--site-name NAME] "
                     "[--notification-sound WAV_FILE] "
-                    "[--secure | --secure-config FILE] [--hsmproxy EXECUTABLE] "
+                    "[--secure [--ini-file FILE] | --secure-config FILE] "
+                    "[--hsmproxy EXECUTABLE] "
                     "[--disable-controls] "
                     "[--disable-echo-cancellation]\n", argv[0]);
             return EXIT_SUCCESS;
@@ -1100,6 +1103,10 @@ int main(int argc, char **argv)
             g_printerr("Unknown or incomplete option: %s\n", argv[i]);
             return EXIT_FAILURE;
         }
+    }
+    if (app.secure_config && !app.secure_mode) {
+        g_printerr("--ini-file requires --secure\n");
+        return EXIT_FAILURE;
     }
     if (app.secure_mode && explicit_network) {
         g_printerr("Secure mode obtains addresses, ports and RTP MTU from the backend; omit network overrides\n");

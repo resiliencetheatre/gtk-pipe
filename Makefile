@@ -30,6 +30,7 @@ tests/test_protocol: tests/test_protocol.c secure-protocol.c secure.h
 check: gtk-pipe tests/test_protocol
 	./gtk-pipe --help
 	./tests/test_protocol
+	python3 tests/test_args.py
 	@for element in autovideosrc autoaudiosrc vp8enc rtpvp8pay opusenc \
 	  rtpopuspay udpsink udpsrc rtpjitterbuffer rtpvp8depay vp8dec \
 	  rtpopusdepay opusdec gtksink autoaudiosink webrtcdsp \

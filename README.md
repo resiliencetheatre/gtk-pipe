@@ -258,10 +258,13 @@ then run:
 
 ```sh
 gtk-pipe --secure
-# Or select the profile directly:
+# Or select the profile directly and skip the file dialog:
+gtk-pipe --secure --ini-file /etc/hsmproxy/site-a.ini
+# The older combined spelling remains supported:
 gtk-pipe --secure-config /etc/hsmproxy/site-a.ini
 # An explicit executable path is supported:
-gtk-pipe --secure-config /etc/hsmproxy/site-a.ini --hsmproxy /usr/local/bin/hsmproxy
+gtk-pipe --secure --ini-file /etc/hsmproxy/site-a.ini \
+  --hsmproxy /usr/local/bin/hsmproxy
 ```
 
 This requires hsmproxy with the HSPUI1 supervision interface. It is launched as
@@ -300,7 +303,8 @@ falls back to standalone operation. The original standalone mode remains an
 explicit independent choice.
 
 `make install` installs both desktop entries. To give the secure entry a fixed
-profile, change its Exec line to `gtk-pipe --secure-config /etc/hsmproxy/site-a.ini`.
+profile and prevent the chooser, change its Exec line to
+`gtk-pipe --secure --ini-file /etc/hsmproxy/site-a.ini`.
 If hsmproxy is outside PATH, include `--hsmproxy /absolute/path/to/hsmproxy`.
 Neither build nor installation requires the hsmproxy source checkout.
 
