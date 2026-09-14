@@ -1,0 +1,10 @@
+<gresources>
+  <gresource prefix="/gtk-pipe/security">
+    <file>smartcard-verified-icon.svg</file>
+    <file>smartcard-not-verified-icon.svg</file>
+    <file>tunnel-lock-verified-icon.svg</file>
+    <file>tunnel-lock-not-verified-icon.svg</file>
+    <file>identity-verified.svg</file>
+    <file>identity-not-verified.svg</file>
+  </gresource>
+</gresources>

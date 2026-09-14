@@ -99,6 +99,7 @@ static void set_peer_reachable(App *app, gboolean reachable)
 static void set_status(App *app, const char *text)
 {
     gtk_label_set_text(GTK_LABEL(app->status), text);
+    gtk_widget_set_tooltip_text(app->status, text);
 }
 
 static void append_message(App *app, const char *who, const char *message)
@@ -1012,7 +1013,11 @@ static void build_ui(App *app, const char *peer)
     gtk_box_pack_start(GTK_BOX(root), video_area, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(root), text_scroll, FALSE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(root), message_controls, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(root), app->status, FALSE, FALSE, 0);
+    GtkWidget *status_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 16);
+    if (app->secure)
+        gtk_box_pack_start(GTK_BOX(status_row), secure_status_widget(app->secure), FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(status_row), app->status, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(root), status_row, FALSE, FALSE, 0);
     gtk_container_add(GTK_CONTAINER(app->window), root);
     gtk_widget_show_all(app->window);
     if (app->secure) secure_start(app->secure);

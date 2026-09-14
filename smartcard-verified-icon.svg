@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="800" height="639" viewBox="0 0 550 439"
+     fill="none" stroke="currentColor" stroke-linecap="round"
+     stroke-linejoin="round" role="img" aria-labelledby="title desc">
+  <title id="title">Smartcard verified</title>
+  <desc id="desc">A smartcard with a bold check mark at its lower-right corner.</desc>
+
+  <defs>
+    <mask id="check-cutout" maskUnits="userSpaceOnUse" x="0" y="0" width="550" height="439">
+      <rect width="550" height="439" fill="white" stroke="none"/>
+      <path d="M435 376l38 38 70-86" stroke="black" stroke-width="68"/>
+    </mask>
+  </defs>
+
+  <g stroke-width="22" mask="url(#check-cutout)">
+    <rect x="7.5" y="59.5" width="496" height="320" rx="32"/>
+    <g aria-label="smartcard chip">
+      <rect x="56" y="124" width="95" height="79" rx="23.5"/>
+      <path d="M103.5 124v79"/>
+      <path d="M56 163.5h31"/>
+      <path d="M120 163.5h31"/>
+    </g>
+  </g>
+
+  <path d="M435 376l38 38 70-86" stroke-width="35" aria-label="verified"/>
+</svg>

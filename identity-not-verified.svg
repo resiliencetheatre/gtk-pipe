@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="800" height="800" viewBox="0 0 24 24"
+     fill="none" stroke="currentColor" stroke-linecap="round"
+     stroke-linejoin="round" role="img" aria-labelledby="title desc">
+  <title id="title">Identity not verified</title>
+  <desc id="desc">A person outline with a bold X status mark.</desc>
+  <g stroke-width="1" aria-label="identity">
+    <circle cx="8" cy="6.5" r="4.75"/>
+    <path d="M1.5 22c.55-4.8 4.15-8.5 8.5-8.5h1.5"/>
+  </g>
+  <g stroke-width="1.55" aria-label="not verified">
+    <path d="M15 14.5l7 7"/>
+    <path d="M22 14.5l-7 7"/>
+  </g>
+</svg>

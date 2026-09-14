@@ -1,5 +1,6 @@
 gtk-pipe
 *.o
+/security-icons.c
 
 /tests/test_protocol
 /tests/test_secure

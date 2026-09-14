@@ -274,19 +274,29 @@ verified peer pin, tunnel endpoints, and ports. Use absolute paths in profiles.
 Provisioning, SO-PIN operations, and trust enrollment remain administrative tasks.
 
 The window discovers the configured card before enabling PIN entry. Press
-**Connect…** and enter its user PIN. PINs are never saved, passed in arguments,
+**Activate** and enter its user PIN. PINs are never saved, passed in arguments,
 or retried automatically. Low/final-attempt and blocked-PIN warnings appear when
 the card provider supplies them. Card detection, verified local identity,
 established tunnel, and the remote GTK Pipe heartbeat are separate indicators.
+The compact security panel places Activate/Deactivate, Reload, and Profile beside
+the profile name, with a current security-state sentence below. During card
+discovery, PIN verification, or connection setup, the first button reads Cancel.
+Small transparent card, tunnel, and identity icons appear in that order beside
+the application status at the bottom. Each uses the supplied crossed/checked SVG pair: red
+means unavailable or not yet verified, black means detected (card), established
+(tunnel), or verified (identity). Hover for the current status; the same status
+is available to screen readers. Errors and PIN warnings remain visible as text.
+Connection details and counters are hidden. Icons are embedded in the executable
+so both local builds and installed launchers use the same artwork.
 
 Text and media controls require the secure tunnel. **Stop stream** keeps text
-and the tunnel; **Disconnect & lock** ends this application's backend/login
-session. After disconnect or failure, select **Check card / reconnect** to
-resume discovery and enter a fresh PIN. Change profile is available when the
-old backend has exited. Card monitoring is explicitly shown as inactive while
+and the tunnel; **Deactivate** ends this application's backend/login
+session. After disconnect or failure, select **Activate** to
+resume discovery and enter a fresh PIN. **Profile** is available when the
+old backend has exited. The red card icon indicates monitoring is inactive while
 no backend is running. Closing the window closes the backend too.
 
-**Refresh session** requests rekey. This first version stops media whenever it
+**Reload** requests rekey. This first version stops media whenever it
 observes forwarding become unavailable, including rekey; press Start stream
 after the secure connection returns. Capture never restarts automatically after
 an observed interruption. A very short rekey may finish between snapshots.

@@ -9,7 +9,15 @@ LDLIBS += $(shell pkg-config --libs $(PKGS))
 
 all: gtk-pipe
 
-gtk-pipe: gtk-pipe.o secure.o secure-protocol.o pin-buffer.o
+SECURITY_SVGS = $(wildcard *verified*.svg)
+
+security-icons.c: security-icons.gresource.xml $(SECURITY_SVGS)
+	glib-compile-resources --generate-source --target=$@ $<
+
+security-icons.o: security-icons.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) -Wno-overlength-strings -c -o $@ $<
+
+gtk-pipe: gtk-pipe.o secure.o secure-protocol.o pin-buffer.o security-icons.o
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 gtk-pipe.o: gtk-pipe.c secure.h
@@ -58,21 +66,21 @@ uninstall:
 	rm -f "$(DESTDIR)$(ICONS_DIR)/gtk-pipe.svg"
 
 clean:
-	rm -f gtk-pipe gtk-pipe.o secure.o secure-protocol.o pin-buffer.o tests/test_protocol tests/test_secure tests/test_app tests/test_secure_sanitize tests/test_app_sanitize
+	rm -f gtk-pipe gtk-pipe.o secure.o secure-protocol.o pin-buffer.o security-icons.o security-icons.c tests/test_protocol tests/test_secure tests/test_app tests/test_secure_sanitize tests/test_app_sanitize
 
 # Requires a GTK display (the runner starts an isolated Broadway display).
-tests/test_secure: tests/test_secure.c secure.c secure-protocol.c pin-buffer.c secure.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) -I. -o $@ tests/test_secure.c secure.c secure-protocol.c pin-buffer.c $(LDLIBS)
+tests/test_secure: tests/test_secure.c secure.c secure-protocol.c pin-buffer.c secure.h security-icons.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I. -o $@ tests/test_secure.c secure.c secure-protocol.c pin-buffer.c security-icons.o $(LDLIBS)
 
 .PHONY: check-ui
-tests/test_app: tests/test_app.c gtk-pipe.c secure.c secure-protocol.c pin-buffer.c secure.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) -I. -o $@ tests/test_app.c secure.c secure-protocol.c pin-buffer.c $(LDLIBS)
+tests/test_app: tests/test_app.c gtk-pipe.c secure.c secure-protocol.c pin-buffer.c secure.h security-icons.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I. -o $@ tests/test_app.c secure.c secure-protocol.c pin-buffer.c security-icons.o $(LDLIBS)
 
 check-ui: tests/test_secure tests/test_app
 	python3 tests/run-ui.py
 
 .PHONY: check-ui-sanitize
-check-ui-sanitize:
-	$(CC) $(CPPFLAGS) -std=c11 -g -O1 -Wall -Wextra -Wpedantic -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -I. -o tests/test_secure_sanitize tests/test_secure.c secure.c secure-protocol.c pin-buffer.c $(LDLIBS)
-	$(CC) $(CPPFLAGS) -std=c11 -g -O1 -Wall -Wextra -Wpedantic -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -I. -o tests/test_app_sanitize tests/test_app.c secure.c secure-protocol.c pin-buffer.c $(LDLIBS)
+check-ui-sanitize: security-icons.o
+	$(CC) $(CPPFLAGS) -std=c11 -g -O1 -Wall -Wextra -Wpedantic -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -I. -o tests/test_secure_sanitize tests/test_secure.c secure.c secure-protocol.c pin-buffer.c security-icons.o $(LDLIBS)
+	$(CC) $(CPPFLAGS) -std=c11 -g -O1 -Wall -Wextra -Wpedantic -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -I. -o tests/test_app_sanitize tests/test_app.c secure.c secure-protocol.c pin-buffer.c security-icons.o $(LDLIBS)
 	ASAN_OPTIONS=detect_leaks=0 UI_TEST_SUFFIX=_sanitize python3 tests/run-ui.py

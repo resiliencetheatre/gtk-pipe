@@ -12,7 +12,7 @@
 struct Secure {
     gint refs;
     GtkWindow *parent;
-    GtkWidget *box, *card, *identity, *tunnel, *details, *connect, *rekey, *dialog, *pin_entry, *profile, *choose;
+    GtkWidget *box, *icons, *card, *identity, *tunnel, *notice, *connect, *rekey, *dialog, *pin_entry, *profile, *choose;
     gchar *config, *binary;
     GSubprocess *child;
     int fd, pin_fd;
@@ -23,9 +23,45 @@ struct Secure {
     SecureChanged changed;
     gpointer user;
 };
+static GtkWidget *state_icon(const char *name, const char *stem, const char *suffix)
+{
+    GtkWidget *image = gtk_image_new();
+    gtk_widget_set_name(image, name);
+    for (guint verified = 0; verified < 2; verified++) {
+        gchar *path = g_strdup_printf("/gtk-pipe/security/%s-%s%s.svg", stem,
+            verified ? "verified" : "not-verified", suffix);
+        GBytes *bytes = g_resources_lookup_data(path, 0, NULL);
+        g_free(path);
+        g_assert(bytes != NULL);
+        gsize size;
+        const char *data = g_bytes_get_data(bytes, &size);
+        gchar *svg = g_strndup(data, size);
+        gchar **parts = g_strsplit(svg, "currentColor", -1);
+        gchar *colored = g_strjoinv(verified ? "#000000" : "#c62828", parts);
+        GInputStream *stream = g_memory_input_stream_new_from_data(colored, -1, g_free);
+        GdkPixbuf *pixbuf = gdk_pixbuf_new_from_stream_at_scale(stream, 28, 28, TRUE, NULL, NULL);
+        g_assert(pixbuf != NULL);
+        g_object_set_data_full(G_OBJECT(image), verified ? "verified" : "unverified", pixbuf, g_object_unref);
+        g_object_unref(stream); g_strfreev(parts); g_free(svg); g_bytes_unref(bytes);
+    }
+    gtk_widget_set_size_request(image, 28, 28);
+    return image;
+}
+static void icon_state(GtkWidget *image, gboolean verified, const char *description)
+{
+    gtk_image_set_from_pixbuf(GTK_IMAGE(image), g_object_get_data(G_OBJECT(image), verified ? "verified" : "unverified"));
+    gtk_widget_set_tooltip_text(image, description);
+    atk_object_set_name(gtk_widget_get_accessible(image), description);
+}
+static void notice(Secure *s, const char *message)
+{
+    gtk_label_set_text(GTK_LABEL(s->notice), message ? message : "");
+    gtk_widget_set_visible(s->notice, message != NULL);
+}
 static void release(Secure *s)
 {
     if (--s->refs) return;
+    g_object_unref(s->icons);
     g_free(s->config); g_free(s->binary); g_free(s);
 }
 static void changed(Secure *s)
@@ -55,8 +91,10 @@ static void failure(Secure *s, const char *message)
     s->failed = TRUE;
     s->status.state = SEC_ERROR;
     if (!s->terminal_error) s->status.reason = 0;
-    gtk_label_set_text(GTK_LABEL(s->tunnel), message);
-    gtk_label_set_text(GTK_LABEL(s->identity), "Identity: locked / unavailable");
+    icon_state(s->card, FALSE, "Card: unknown / unavailable");
+    icon_state(s->tunnel, FALSE, message);
+    icon_state(s->identity, FALSE, "Identity: locked / unavailable");
+    notice(s, message);
     gtk_widget_set_sensitive(s->connect, FALSE);
     gtk_widget_set_sensitive(s->rekey, FALSE);
     changed(s);
@@ -81,8 +119,8 @@ static void render(Secure *s)
     const char *card = state == SEC_WAIT_CARD ? reason_text(s->status.reason) :
                        state == SEC_ERROR || state == SEC_STOPPED ? "Unknown / unavailable" : "Configured card detected";
     gchar *line = g_strdup_printf("Card: %s", card);
-    gtk_label_set_text(GTK_LABEL(s->card), line); g_free(line);
-    gtk_label_set_text(GTK_LABEL(s->identity),
+    icon_state(s->card, state >= SEC_PIN_REQUIRED && state <= SEC_ESTABLISHED, line); g_free(line);
+    icon_state(s->identity, state >= SEC_WAIT_PEER && state <= SEC_ESTABLISHED,
         state == SEC_PIN_REQUIRED && s->status.reason ? reason_text(s->status.reason) :
         state >= SEC_WAIT_PEER && state <= SEC_ESTABLISHED ? "Identity: unlocked and verified" :
         state == SEC_AUTHENTICATING ? "Identity: checking PIN and signing key…" : "Identity: locked");
@@ -90,19 +128,20 @@ static void render(Secure *s)
         state == SEC_WAIT_PEER ? "Tunnel: waiting for peer / reconnecting" :
         state == SEC_CONNECTING ? "Tunnel: authenticating peer / refreshing session" :
         state == SEC_ERROR ? reason_text(s->status.reason) : "Tunnel: disconnected";
-    gtk_label_set_text(GTK_LABEL(s->tunnel), tunnel);
-    gtk_button_set_label(GTK_BUTTON(s->connect), state == SEC_PIN_REQUIRED ? "Connect…" : "Disconnect & lock");
+    icon_state(s->tunnel, state == SEC_ESTABLISHED, tunnel);
+    const char *summary = state == SEC_WAIT_CARD ? "Insert card / Disconnected" :
+        state == SEC_PIN_REQUIRED ? "Card inserted / Disconnected — activate to enter PIN" :
+        state == SEC_AUTHENTICATING ? "Card inserted / Verifying identity…" :
+        state == SEC_WAIT_PEER ? "Identity verified / Waiting for peer…" :
+        state == SEC_CONNECTING ? "Identity verified / Connecting…" :
+        state == SEC_ESTABLISHED ? "Card inserted / Connected" : "Inactive / Disconnected";
+    notice(s, s->status.reason && (state == SEC_PIN_REQUIRED || state == SEC_ERROR ||
+        (state == SEC_WAIT_CARD && s->status.reason != 1)) ? reason_text(s->status.reason) : summary);
+    gtk_button_set_label(GTK_BUTTON(s->connect), state == SEC_PIN_REQUIRED ? "Activate" :
+        state == SEC_AUTHENTICATING || state == SEC_WAIT_CARD || state == SEC_CONNECTING ? "Cancel" : "Deactivate");
+    gtk_widget_set_tooltip_text(s->connect, state == SEC_PIN_REQUIRED ? "Enter your PIN to unlock the identity and connect" : "Disconnect and lock the identity");
     gtk_widget_set_sensitive(s->connect, !s->stopping);
     gtk_widget_set_sensitive(s->rekey, state == SEC_ESTABLISHED && !s->stopping);
-    line = g_strdup_printf("Session generation: %" G_GUINT64_FORMAT "   Payload limit: %u bytes\n"
-        "Video / audio / text TX: %" G_GUINT64_FORMAT " / %" G_GUINT64_FORMAT " / %" G_GUINT64_FORMAT "\n"
-        "Video / audio / text RX: %" G_GUINT64_FORMAT " / %" G_GUINT64_FORMAT " / %" G_GUINT64_FORMAT "\n"
-        "Rejected: %" G_GUINT64_FORMAT "   Oversize: %" G_GUINT64_FORMAT "   MTU drops: %" G_GUINT64_FORMAT,
-        s->status.generation, s->status.mtu,
-        s->status.tx[0], s->status.tx[1], s->status.tx[2],
-        s->status.rx[0], s->status.rx[1], s->status.rx[2],
-        s->status.rejected, s->status.oversize, s->status.mtu_drops);
-    gtk_label_set_text(GTK_LABEL(s->details), line); g_free(line);
     if (s->dialog && state != SEC_PIN_REQUIRED)
         gtk_dialog_response(GTK_DIALOG(s->dialog), GTK_RESPONSE_CANCEL);
     changed(s);
@@ -167,11 +206,13 @@ static void child_exited(GObject *object, GAsyncResult *result, gpointer data)
     if (!s->closing) {
         if (!s->failed) {
             s->status.state = SEC_STOPPED;
-            gtk_label_set_text(GTK_LABEL(s->tunnel), "Tunnel: disconnected");
+            icon_state(s->tunnel, FALSE, "Tunnel: disconnected");
+            notice(s, "Inactive / Disconnected — activate to check card");
         }
-        gtk_label_set_text(GTK_LABEL(s->card), "Card: not monitored — select Check card to reconnect");
-        gtk_label_set_text(GTK_LABEL(s->identity), "Identity: locked");
-        gtk_button_set_label(GTK_BUTTON(s->connect), "Check card / reconnect");
+        icon_state(s->card, FALSE, "Card: not monitored — activate to check card");
+        icon_state(s->identity, FALSE, "Identity: locked");
+        gtk_button_set_label(GTK_BUTTON(s->connect), "Activate");
+        gtk_widget_set_tooltip_text(s->connect, "Check card and reconnect");
         gtk_widget_set_sensitive(s->connect, TRUE);
         gtk_widget_set_sensitive(s->choose, TRUE);
         gtk_widget_set_sensitive(s->rekey, FALSE);
@@ -216,7 +257,7 @@ void secure_start(Secure *s)
     if (!s->child) {
         close(pair[0]); close(pin[1]);
         failure(s, error->message); g_clear_error(&error);
-        gtk_button_set_label(GTK_BUTTON(s->connect), "Retry backend");
+        gtk_button_set_label(GTK_BUTTON(s->connect), "Activate");
         gtk_widget_set_sensitive(s->connect, TRUE); return;
     }
     gtk_widget_set_sensitive(s->choose, FALSE);
@@ -329,22 +370,32 @@ Secure *secure_new(GtkWindow *parent, const char *config, const char *binary,
     s->parent = parent; s->config = g_canonicalize_filename(config, NULL);
     s->binary = g_strdup(binary); s->changed = callback; s->user = user;
     s->box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    GtkWidget *panel = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+    s->icons = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+    g_object_ref_sink(s->icons);
+    gtk_box_pack_start(GTK_BOX(s->box), panel, FALSE, FALSE, 0);
     s->profile = gtk_label_new(NULL);
+    gtk_label_set_xalign(GTK_LABEL(s->profile), 0);
+    gtk_label_set_ellipsize(GTK_LABEL(s->profile), PANGO_ELLIPSIZE_END);
     profile_label(s);
-    gtk_box_pack_start(GTK_BOX(s->box), s->profile, FALSE, FALSE, 0);
-    s->card = gtk_label_new("Card: checking…");
-    s->identity = gtk_label_new("Identity: locked");
-    s->tunnel = gtk_label_new("Tunnel: disconnected");
-    GtkWidget *labels[] = {s->card, s->identity, s->tunnel};
-    for (guint i=0; i<G_N_ELEMENTS(labels); i++) {
-        gtk_label_set_xalign(GTK_LABEL(labels[i]), 0);
-        gtk_label_set_line_wrap(GTK_LABEL(labels[i]), TRUE);
-        gtk_box_pack_start(GTK_BOX(s->box), labels[i], FALSE, FALSE, 0);
+    s->card = state_icon("secure-card", "smartcard", "-icon");
+    s->tunnel = state_icon("secure-tunnel", "tunnel-lock", "-icon");
+    s->identity = state_icon("secure-identity", "identity", "");
+    GtkWidget *images[] = {s->card, s->tunnel, s->identity};
+    for (guint i=0; i<G_N_ELEMENTS(images); i++) {
+        gtk_box_pack_start(GTK_BOX(s->icons), images[i], FALSE, FALSE, 0);
     }
+    icon_state(s->card, FALSE, "Card: not monitored");
+    icon_state(s->identity, FALSE, "Identity: locked");
+    icon_state(s->tunnel, FALSE, "Tunnel: disconnected");
     GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    s->connect = gtk_button_new_with_label("Check card");
-    s->rekey = gtk_button_new_with_label("Refresh session");
-    s->choose = gtk_button_new_with_label("Change profile…");
+    gtk_widget_set_valign(row, GTK_ALIGN_CENTER);
+    s->connect = gtk_button_new_with_label("Activate");
+    s->rekey = gtk_button_new_with_label("Reload");
+    s->choose = gtk_button_new_with_label("Profile");
+    gtk_widget_set_tooltip_text(s->connect, "Check card and connect");
+    gtk_widget_set_tooltip_text(s->rekey, "Refresh the secure session (rekey)");
+    gtk_widget_set_tooltip_text(s->choose, "Select a profile after deactivating");
     g_signal_connect(s->choose, "clicked", G_CALLBACK(choose_clicked), s);
     gtk_widget_set_sensitive(s->rekey, FALSE);
     g_signal_connect(s->connect, "clicked", G_CALLBACK(connect_clicked), s);
@@ -352,17 +403,18 @@ Secure *secure_new(GtkWindow *parent, const char *config, const char *binary,
     gtk_box_pack_start(GTK_BOX(row), s->connect, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(row), s->rekey, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(row), s->choose, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(s->box), row, FALSE, FALSE, 0);
-    GtkWidget *expander = gtk_expander_new("Connection details");
-    s->details = gtk_label_new("No session");
-    gtk_label_set_selectable(GTK_LABEL(s->details), TRUE);
-    gtk_label_set_xalign(GTK_LABEL(s->details), 0);
-    gtk_container_add(GTK_CONTAINER(expander), s->details);
-    gtk_box_pack_start(GTK_BOX(s->box), expander, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(panel), row, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(panel), s->profile, TRUE, TRUE, 0);
+    s->notice = gtk_label_new("Inactive / Disconnected — activate to check card");
+    gtk_widget_set_name(s->notice, "secure-state");
+    gtk_label_set_xalign(GTK_LABEL(s->notice), 0);
+    gtk_label_set_line_wrap(GTK_LABEL(s->notice), TRUE);
+    gtk_box_pack_start(GTK_BOX(s->box), s->notice, FALSE, FALSE, 0);
     s->timer = g_timeout_add(500, tick, s);
     return s;
 }
 GtkWidget *secure_widget(Secure *s) { return s->box; }
+GtkWidget *secure_status_widget(Secure *s) { return s->icons; }
 void secure_free(Secure *s)
 {
     if (!s) return;

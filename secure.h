@@ -14,6 +14,7 @@ typedef struct Secure Secure;
 typedef void (*SecureChanged)(gpointer, const SecureStatus *);
 Secure *secure_new(GtkWindow *, const char *, const char *, SecureChanged, gpointer);
 GtkWidget *secure_widget(Secure *);
+GtkWidget *secure_status_widget(Secure *);
 void secure_start(Secure *);
 void secure_free(Secure *);
 #endif

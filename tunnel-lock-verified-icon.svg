@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="800" height="716" viewBox="0 0 38 34"
+     fill="currentColor" role="img" aria-labelledby="title desc">
+  <title id="title">Verified secure tunnel</title>
+  <desc id="desc">A tunnel lock with a bold check mark crossing its lower-right corner.</desc>
+
+  <defs>
+    <mask id="check-cutout" maskUnits="userSpaceOnUse" x="0" y="0" width="38" height="34">
+      <rect width="38" height="34" fill="white"/>
+      <path d="M24.5 27.5l4 4 7.5-9"
+            fill="none" stroke="black" stroke-width="6"
+            stroke-linecap="round" stroke-linejoin="round"/>
+    </mask>
+  </defs>
+
+  <path mask="url(#check-cutout)"
+        d="M28 7a1.9919 1.9919 0 0 0-1.7227 1H22A6 6 0 0 0 10 8H5.7227a2 2 0 1 0 0 2H10v4H8a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V16a2 2 0 0 0-2-2h-2v-4h4.2773A1.9966 1.9966 0 1 0 28 7ZM12 8a4 4 0 0 1 8 0v6h-8v-4h5V8Zm12 8v12H8V16Z"/>
+
+  <path d="M24.5 27.5l4 4 7.5-9"
+        fill="none" stroke="currentColor" stroke-width="3.2"
+        stroke-linecap="round" stroke-linejoin="round" aria-label="verified"/>
+</svg>
